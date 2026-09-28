@@ -1,4 +1,5 @@
 import sys, os
+import struct
 import time
 import getopt
 import mmap
@@ -12,7 +13,7 @@ except:
     pass
 from psana import dgram
 from psana.detector import detectors
-from psana.psexp.event_manager import TransitionId
+from psana.psexp.event_manager import TransitionId, TransitionId_xtc1
 from psana import utils
 import numpy as np
 
@@ -60,11 +61,13 @@ class DgramManager(object):
         tag=None,
         max_retries=0,
         config_consumers=[],
+        idx_files=[],
     ):
         """Opens xtc_files and stores configs.
         If file descriptors (fds) is given, reuse the given file descriptors.
         """
         self.xtc_files = []
+        self.idx_files = []
         self.shmem_cli = None
         self.mq_inp = None
         self.mq_res = None
@@ -84,6 +87,8 @@ class DgramManager(object):
         self.configs = []
         self._timestamps = []  # built when iterating
         self.found_endrun = True
+        self.DgramCtr = dgram.Dgram # default constructor is psana2 Dgram
+        self.xtc1 = False
 
         # We check for EndRun when we hit the end of RunSingleFile and RunShmem.
         # If there's no EndRun, a fake one will be created. In this case,
@@ -96,6 +101,10 @@ class DgramManager(object):
         self.config_consumers = config_consumers
         self.tag = tag
 
+        if isinstance(idx_files, (str)):
+            self.idx_files = np.array([idx_files], dtype="U%s" % FN_L)
+        elif isinstance(idx_files, (list, np.ndarray)):
+            self.idx_files = idx_files
         if isinstance(xtc_files, (str)):
             self.xtc_files = np.array([xtc_files], dtype="U%s" % FN_L)
         elif isinstance(xtc_files, (list, np.ndarray)):
@@ -137,6 +146,11 @@ class DgramManager(object):
                 else:
                     self.xtc_files = np.asarray(xtc_files, dtype="U%s" % FN_L)
 
+        if self.xtc_files[0].endswith(".xtc"):
+            self.DgramCtr = dgram.Dgram_xtc1
+            self.xtc1 = True
+            self._parse_idx_files() # this is optional
+
         self.given_fds = True if len(fds) > 0 else False
         if self.given_fds:
             self.fds = np.asarray(fds, dtype=np.int32)
@@ -150,22 +164,148 @@ class DgramManager(object):
         for fd, xtc_file in zip(self.fds, self.xtc_files):
             self.fds_map[fd] = xtc_file
 
-        given_configs = True if len(configs) > 0 else False
-        if given_configs:
-            self.set_configs(configs)
-        elif xtc_files[0] != "shmem" and xtc_files[0] != "drp":
-            self.set_configs(
-                [
-                    dgram.Dgram(file_descriptor=fd, max_retries=self.max_retries)
-                    for fd in self.fds
-                ]
-            )
+        if self.xtc1:
+            self.dgrams =  [self.DgramCtr(file_descriptor=fd, max_retries=self.max_retries)
+                        for fd in self.fds]
+            self.set_configs(self.dgrams)
 
+        else:
+            given_configs = True if len(configs) > 0 else False
+            if given_configs:
+                self.set_configs(configs)
+            elif xtc_files[0] != "shmem" and xtc_files[0] != "drp":
+                self.set_configs(
+                    [
+                        self.DgramCtr(file_descriptor=fd, max_retries=self.max_retries)
+                        for fd in self.fds
+                    ]
+                )
         self.calibconst = (
             {}
         )  # initialize to empty dict - will be populated by run class
         self.n_files = len(self.xtc_files)
         self.set_chunk_ids()
+
+    def _parse_idx_files(self):
+        """
+        Gets info out of LCLS1 xtc1 .idx files
+        """
+        self.idx_info = []
+        filename_len = 32
+        print("List of idx files: ", self.idx_files)
+
+        header_format = f"<hh{filename_len}sihhiiii"
+        header_size = struct.calcsize(header_format)
+        L1node_format = f"<IIIqIIII"
+        L1node_size = struct.calcsize(L1node_format)
+        calibcycle_format = f"<qiII"
+        calibcycle_size = struct.calcsize(calibcycle_format)
+        evrcycle_format = f"<B"
+        evrcycle_size = struct.calcsize(evrcycle_format)
+        detector_format = f"<IIB"
+        #detector_format = f"<IIB"
+        detector_size = struct.calcsize(detector_format)
+        srcList_format = f"<II"
+        srcList_size = struct.calcsize(srcList_format)
+        typeList_format = f"<I"
+        typeList_size = struct.calcsize(typeList_format)
+        # I = uint32 timestamp1 (seconds)
+        # I = uint32 timestamp2 (nanoseconds)
+        # Q = uint64 offset
+        entry_format = "<IIQ"
+        entry_size = struct.calcsize(entry_format)
+
+        for idx_file in self.idx_files:
+            print(idx_file)
+            if not os.path.isfile(idx_file):
+                raise FileNotFoundError(f"Idx doesnt exist: {idx_file}")
+
+            entries = []
+            file_size = os.path.getsize(idx_file)
+
+            with open(idx_file, "rb") as f:
+                header_buffer = f.read(header_size)
+                header_data = struct.unpack(header_format, header_buffer)
+                filename = header_data[2].decode("utf-8", errors="ignore").strip("\x00")
+                header_info = {
+                    "TypeId": header_data[0],
+                    "Header Version": header_data[1],
+                    "filename": filename,
+                    "iNumCalib": header_data[3],
+                    "iNumEvrEvents": header_data[4],
+                    "iNumDetector": header_data[5],
+                    "iNumIndex": header_data[6],
+                    "iNumOutOrder": header_data[7],
+                    "iNumOverlapPrev": header_data[8],
+                    "iNumOverlapNext": header_data[9],
+                }
+
+                L1node_info = []
+                for i in range(header_info["iNumIndex"]):
+                    L1node_buffer = f.read(L1node_size)
+                    L1node_data = struct.unpack(L1node_format, L1node_buffer)
+                    L1node_inf = {
+                        "uSeconds": L1node_data[0],
+                        "uNanoseconds": L1node_data[1],
+                        "TimeStamp": L1node_data[0]<<32 | L1node_data[1],
+                        "uFiducial": L1node_data[2],
+                        "i64OffsetXtc": L1node_data[3],
+                        "Damage": L1node_data[4],
+                        "uMaskDetDmgs": L1node_data[5],
+                        "uMaskDetData": L1node_data[6],
+                        "uMaskEvrEvents": L1node_data[7],
+                    }
+                    L1node_info.append(L1node_inf)
+                    print(L1node_inf)
+                    entries.append({"Timestamp": L1node_data[0]<<32 | L1node_data[1], \
+                                    "Offset": L1node_data[3]})
+
+                calibcycle_info = []
+                for i in range(header_info["iNumCalib"]):
+                    calibcycle_buffer = f.read(calibcycle_size)
+                    calibcycle_data = struct.unpack(calibcycle_format, calibcycle_buffer)
+                    calibcycle_inf = {
+                        "i640Offset:": calibcycle_data[0],
+                        "iL1Index": calibcycle_data[1],
+                        "uSeconds": calibcycle_data[2],
+                        "uNanoseconds": calibcycle_data[3],
+                    }
+                    calibcycle_info.append(calibcycle_inf)
+
+                evrcycle_info = []
+                for i in range(header_info["iNumEvrEvents"]):
+                    evrcycle_buffer = f.read(evrcycle_size)
+                    evrcycle_data = struct.unpack(evrcycle_format, evrcycle_buffer)
+                    evrcycle_inf = {
+                        "uEventCode": evrcycle_data[0],
+                    }
+                    evrcycle_info.append(evrcycle_inf)
+
+                detector_info = []
+                for i in range(header_info["iNumDetector"]):
+                    detector_buffer = f.read(detector_size)
+                    detector_data = struct.unpack(detector_format, detector_buffer)
+                    numSrc = detector_data[2]
+                    srcList = []
+                    for j in range(numSrc):
+                        srcList_buffer = f.read(srcList_size)
+                        srcList_data = struct.unpack(srcList_format, srcList_buffer)
+                        srcList.append(srcList_data)
+                    typeList = []
+                    for j in range(numSrc):
+                        typeList_buffer = f.read(typeList_size)
+                        typeList_data = struct.unpack(typeList_format, typeList_buffer)
+                        typeList.append(typeList_data)
+                    detector_inf = {
+                        "_phy": detector_data[0],
+                        "_log": detector_data[1],
+                        "numSrc": detector_data[2],
+                        "srcList": srcList,
+                        "typeList": typeList,
+                    }
+                    detector_info.append(detector_inf)
+
+            self.idx_info.append(entries)
 
     def _connect_shmem_cli(self, tag):
         # ShmemClients open a connection in connect() and close it in
@@ -355,7 +495,7 @@ class DgramManager(object):
 
                 uniqueid = dettype
                 for segid in sorted_segment_ids:
-                    uniqueid += "_" + detid_dict[segid]
+                    uniqueid += "_" + str(detid_dict[segid])
 
                 configinfo_dict[det_name] = type(
                     "ConfigInfo",
@@ -559,35 +699,59 @@ class DgramManager(object):
                 )
         else:
             try:
-                dgrams = [
-                    dgram.Dgram(config=config, max_retries=self.max_retries)
-                    for config in self.configs
-                ]
-            except StopIteration as err:
-                fake_endruns = self._check_missing_endrun()
-                if fake_endruns:
-                    dgrams = fake_endruns
+                if self.xtc1:
+                    if not self.configs:
+                        self.configs = [self.dgrams[self._iternumber]]
+                    dgrams = [
+                        dgram.Dgram_xtc1(config=config, max_retries=self.max_retries)
+                        for config in self.configs
+                    ]
                 else:
-                    print(err)
-                    raise StopIteration
+                    dgrams = [
+                        dgram.Dgram(config=config, max_retries=self.max_retries) \
+                        for config in self.configs
+                    ]
+            except StopIteration as err:
+                if not self.xtc1 or self._iternumber >= len(self.xtc_files):
+                    fake_endruns = self._check_missing_endrun()
+                    if fake_endruns:
+                        dgrams = fake_endruns
+                    else:
+                        print(err)
+                        raise StopIteration
 
         # Check BeginRun - EndRun pairing
-        service = dgrams[0].service()
-        if service == TransitionId.BeginRun:
-            fake_endruns = self._check_missing_endrun(beginruns=dgrams)
-            if fake_endruns:
-                dgrams = fake_endruns
+        if self.xtc1:
+            service = dgrams[0].service()
+            if service == TransitionId_xtc1.Configure:
+                self.set_configs(dgrams)
+                return self.__next__()
+            elif service == TransitionId_xtc1.EndRun:
+                if self._iternumber < len(self.xtc_files):
+                    self._iternumber += 1
+                else:
+                    self.found_endrun = True
+            ts = utils.first_timestamp(dgrams)
+            self._timestamps.append(ts)
+            return dgrams
 
-        if service == TransitionId.EndRun:
-            self.found_endrun = True
+        else:
+            service = dgrams[0].service()
+            if service == TransitionId.BeginRun:
+                fake_endruns = self._check_missing_endrun(beginruns=dgrams)
+                if fake_endruns:
+                    dgrams = fake_endruns
 
-        if service == TransitionId.Configure:
-            self.set_configs(dgrams)
-            return self.__next__()
+            if service == TransitionId.EndRun:
+                self.found_endrun = True
 
-        ts = utils.first_timestamp(dgrams)
-        self._timestamps.append(ts)
-        return dgrams
+            if service == TransitionId.Configure:
+                self.set_configs(dgrams)
+                return self.__next__()
+
+            ts = utils.first_timestamp(dgrams)
+            self._timestamps.append(ts)
+            return dgrams
 
     def jumps(self, dgram_i, offset, size):
         if offset == 0 and size == 0:

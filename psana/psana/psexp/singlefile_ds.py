@@ -1,5 +1,5 @@
 from psana.dgrammanager import DgramManager
-from psana.psexp import TransitionId
+from psana.psexp import TransitionId, TransitionId_xtc1
 from psana.psexp.ds_base import DataSourceBase
 from psana.psexp.run import RunSingleFile
 from pathlib import Path
@@ -37,6 +37,10 @@ class SingleFileDataSource(DataSourceBase):
             return False
 
         file = self.files[self.runnum_list_index]
+        if file.endswith("xtc"):
+            # Might not need both, check
+            self.dsparms.xtc1
+            self.xtc1 = True
         full_path = Path(file)
 
         if not full_path.exists():
@@ -61,7 +65,9 @@ class SingleFileDataSource(DataSourceBase):
 
     def _setup_beginruns(self):
         for dgrams in self.dm:
-            if utils.first_service(dgrams) == TransitionId.BeginRun:
+            first_serv = utils.first_service(dgrams)
+            beginrun = TransitionId_xtc1.BeginRun if self.xtc1 else TransitionId.BeginRun
+            if first_serv == beginrun:
                 self.beginruns = dgrams
                 return True
         return False

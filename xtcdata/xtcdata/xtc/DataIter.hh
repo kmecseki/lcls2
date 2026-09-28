@@ -12,13 +12,13 @@
 
 namespace XtcData{
 
-class DataIter : public XtcData::XtcIterator
+class DataIter : public XtcData::XtcIterator<Xtc>
 {
 public:
     enum {Stop, Continue};
 
-    DataIter(XtcData::Xtc* xtc, const void* bufEnd) : XtcData::XtcIterator(xtc, bufEnd) { iterate(); }
-    DataIter() : XtcData::XtcIterator() {}
+    DataIter(XtcData::Xtc* xtc, const void* bufEnd) : XtcData::XtcIterator<Xtc>(xtc, bufEnd) { iterate(); }
+    DataIter() : XtcData::XtcIterator<Xtc>() {}
    ~DataIter();
 
     virtual int process(XtcData::Xtc* xtc, const void* bufEnd);

@@ -5,7 +5,7 @@ import array
 
 from cpython.getargs cimport PyArg_ParseTupleAndKeywords
 from cpython.object cimport PyObject
-from psana.dgramlite cimport Dgram, Xtc
+from psana.dgramlite cimport Dgram, Dgram_xtc1, Xtc, Xtc1
 from libc.stddef cimport size_t
 from libc.stdint cimport uint64_t
 
@@ -16,8 +16,8 @@ from time import perf_counter
 import numpy as np
 
 from psana import dgram
-from psana.dgramedit import PyDgram
-from psana.psexp import TransitionId
+from psana.dgramedit import PyDgram, PyDgram_xtc1
+from psana.psexp import TransitionId, TransitionId_xtc1
 
 PROFILE_ENV = "PSANA_EB_PROFILE"
 PROFILE_INTERVAL_ENV = "PSANA_EB_PROFILE_INTERVAL"
@@ -115,7 +115,6 @@ cdef class ProxyEvent:
                                     view=bytearray(pydg.as_memoryview()))
         return dgrams
 
-
 cdef class EventBuilder:
     """Builds a batch of events
     Takes memoryslice 'views' and identifies matching timestamp
@@ -150,6 +149,8 @@ cdef class EventBuilder:
     cdef list _pydgram_pool
     cdef bint _use_proxy_events
     cdef list _scratch_pydgrams
+    cdef bint xtc1
+    cdef object _is_event
     cdef array.array _event_footer
 
     # Profiling helpers (enabled via PSANA_EB_PROFILE=1)
@@ -183,27 +184,35 @@ cdef class EventBuilder:
         self._pydgram_pool = []
 
         # Parse kwargs: timestamps (O), intg_stream_id (i), batch_size (i), use_proxy_events (i)
-        cdef char* kwlist[5]
+        cdef char* kwlist[6]
         cdef int use_proxy_flag = 1
+        self.xtc1 = False
         kwlist[0] = "filter_timestamps"
         kwlist[1] = "intg_stream_id"
         kwlist[2] = "batch_size"
         kwlist[3] = "use_proxy_events"
-        kwlist[4] = NULL
+        kwlist[4] = "xtc1"
+        kwlist[5] = NULL
 
         # NOTE: args must be empty here; we accept kwargs only for these three
-        if PyArg_ParseTupleAndKeywords(args, kwargs, "|Oiii",
+        if PyArg_ParseTupleAndKeywords(args, kwargs, "|Oiiip",
                                     kwlist,
                                     &(self.filter_timestamps_obj),
                                     &(self.intg_stream_id),
                                     &(self.batch_size),
-                                    &use_proxy_flag) is False:
-            raise RuntimeError("Invalid kwargs for EventBuilder (expected: filter_timestamps, intg_stream_id, batch_size)")
+                                    &use_proxy_flag,
+                                    &self.xtc1) is False:
+            raise RuntimeError("Invalid kwargs for EventBuilder (expected: filter_timestamps, intg_stream_id, batch_size, xtc1)")
 
         self._use_proxy_events = bool(use_proxy_flag)
         self._init_profile()
         self._scratch_pydgrams = [0] * self.nsmds
-        self._event_footer = array.array('I', [0] * (self.nsmds + 1))
+        if self.xtc1:
+            self._event_footer = array.array('I', [0] * (1))
+            self._is_event = TransitionId_xtc1.isEvent
+        else:
+            self._event_footer = array.array('I', [0] * (self.nsmds + 1))
+            self._is_event = TransitionId.isEvent
 
     cdef void _init_profile(self):
         cdef object env_val = os.environ.get(PROFILE_ENV)
@@ -289,6 +298,7 @@ cdef class EventBuilder:
             return ((0,), False)
 
     cdef object _acquire_pydgram(self, Dgram* dg_ptr, uint64_t dgram_size):
+        # Overloaded Xtc2 version
         cdef object pydg
         if self._pydgram_pool:
             pydg = self._pydgram_pool.pop()
@@ -296,6 +306,16 @@ cdef class EventBuilder:
             return pydg
         pycap_dg = PyCapsule_New(<void *>dg_ptr, "dgram", NULL)
         return PyDgram(pycap_dg, dgram_size)
+
+    cdef object _acquire_pydgram_xtc1(self, Dgram_xtc1* dg_ptr, uint64_t dgram_size):
+        # Overloaded Xtc1 version
+        cdef object pydg
+        if self._pydgram_pool:
+            pydg = self._pydgram_pool.pop()
+            pydg.reset_from_ptr(<size_t><void*>dg_ptr, dgram_size)
+            return pydg
+        pycap_dg = PyCapsule_New(<void *>dg_ptr, "dgram_xtc1", NULL)
+        return PyDgram_xtc1(pycap_dg, dgram_size)
 
     cdef void _release_pydgram(self, object pydg):
         if pydg != 0:
@@ -329,7 +349,7 @@ cdef class EventBuilder:
         cdef char* view_ptr
         cdef Dgram* dg
         cdef size_t dgram_size
-
+        print("called gather event xtc2")
         array.zero(self.timestamps)
         array.zero(self.dgram_sizes)
         array.zero(self.services)
@@ -350,11 +370,12 @@ cdef class EventBuilder:
                     min_ts = self.timestamps[view_idx]
                     smd_id = view_idx
                 PyBuffer_Release(&buf)
+        print("1 timstamp:",self.timestamps, "services:", self.services)
 
         if smd_id == -1:
             self._release_pydgram_list(pydgrams)
             return 0
-
+        print("Pydgrams1:", pydgrams)
         out_timestamp[0] = self.timestamps[smd_id]
         out_service[0] = self.services[smd_id]
         cn_dgrams = 1
@@ -372,7 +393,7 @@ cdef class EventBuilder:
                 self.offsets[view_idx] -= self.dgram_sizes[view_idx]
                 self._release_pydgram(pydgrams[view_idx])
                 pydgrams[view_idx] = 0
-
+        print("2 timestamp", self.timestamps)
         if not TransitionId.isEvent(out_service[0]) and cn_dgrams != self.nsmds:
             self._release_pydgram_list(pydgrams)
             msg = (
@@ -380,7 +401,107 @@ cdef class EventBuilder:
                 f'(ts:{out_timestamp[0]}) expected:{self.nsmds} received:{cn_dgrams}'
             )
             raise RuntimeError(msg)
+        print("Pydgrams2:", pydgrams)
+        return cn_dgrams
 
+    cdef int _gather_event_xtc1(self, list pydgrams, short* out_service, uint64_t* out_timestamp):
+        """Populate pydgrams with the next aligned event; return number of matching dgrams."""
+        cdef short view_idx
+        cdef uint64_t min_ts = 0
+        cdef uint64_t this_ts = 0
+        cdef int smd_id = -1
+        cdef int cn_dgrams = 0
+        cdef Py_buffer buf
+        cdef char* view_ptr
+        cdef Dgram_xtc1* dg
+        cdef size_t dgram_size
+        #cdef int offset = 0
+        print("In _gather_event")
+        array.zero(self.timestamps)
+        array.zero(self.dgram_sizes)
+        array.zero(self.services)
+        cdef list target_indices = []
+        cdef list dgrams_ptrs = [None] * len(self.views)
+        view = self.views[view_idx]
+        offset = 0
+        PyObject_GetBuffer(view, &buf, PyBUF_SIMPLE | PyBUF_ANY_CONTIGUOUS)
+        view_ptr = <char *>buf.buf
+        for view_idx, view in enumerate(self.views):
+            #if self.offsets[view_idx] < self.sizes[view_idx]:
+            PyObject_GetBuffer(view, &buf, PyBUF_SIMPLE | PyBUF_ANY_CONTIGUOUS)
+            view_ptr = <char *>buf.buf
+            view_ptr += self.offsets[view_idx]
+            dg = <Dgram_xtc1 *>view_ptr
+            dgram_size = sizeof(Dgram_xtc1) + (dg.xtc.extent - sizeof(Xtc1))
+            self.offsets[view_idx] += dgram_size
+            #print("GATHER SERVICE ", (dg.seq.low >> 24) & 0xf)
+
+            dgrams_ptrs[view_idx] = self._acquire_pydgram_xtc1(dg, dgram_size)#(view_ptr, dgram_size)
+
+            #print("GATHER SELF.SIZE: ", self.sizes[view_idx])
+            #pydgrams[view_idx] = self._acquire_pydgram(dg, dgram_size)
+            self.timestamps[view_idx] = <uint64_t>dg.seq.high << 32 | dg.seq.low
+            #print("GATHER EXTENT1:", dg.xtc.extent)
+            self.dgram_sizes[view_idx] = dgram_size
+            self.services[view_idx] = (dg.seq.low >> 24) & 0xf
+
+            if min_ts == 0 or self.timestamps[view_idx] < min_ts:
+                min_ts = self.timestamps[view_idx]
+                serv = self.services[view_idx]
+                smd_id = view_idx
+                target_indices = [view_idx]
+            elif self.timestamps[view_idx] == min_ts:
+                target_indices.append(view_idx)
+            PyBuffer_Release(&buf)
+
+        out_timestamp[0] = min_ts #self.timestamps[smd_id]
+        out_service[0] = serv
+        cn_dgrams = 1
+        pydgrams.clear()
+        for idx in range(self.nsmds):
+            if idx in target_indices:
+                #print("SIZE2:", dgrams_ptrs[idx][0].size())
+                win_ptr = dgrams_ptrs[idx]
+                #win_size = win_ptr.size()
+                #win_dg = <Dgram_xtc1 *>win_ptr
+                #print("EXTENT2", win_dg.xtc.extent)
+                pydgrams.append(win_ptr)
+            else:
+                pydgrams.append(0)
+        #for view_idx in range(self.nsmds):
+        #    if self.timestamps[view_idx] == out_timestamp[0]:
+        #        cn_dgrams += 1
+        #    else:
+        #        print("Found a different ts!")
+        #        print("Finding the smallest one..", min_ts, view_idx)
+
+                #print("1 timstamp:",self.timestamps, self.services)
+                #exit(1)
+                #return cn_dgrams
+        #exit(1)
+
+        for view_idx in range(self.nsmds):
+            if (
+                view_idx == smd_id
+                or self.offsets[view_idx] - self.dgram_sizes[view_idx] >= self.sizes[view_idx]
+            ):
+                continue
+
+            if self.timestamps[view_idx] == out_timestamp[0]:
+                cn_dgrams += 1
+            else:
+                self.offsets[view_idx] -= self.dgram_sizes[view_idx]
+                self._release_pydgram(pydgrams[view_idx])
+                pydgrams[view_idx] = 0
+        print("1 timstamp, service, offset:",self.timestamps, self.services, self.offsets)
+        print("Pydgrams:", pydgrams)
+        #if not TransitionId_xtc1.isEvent(out_service[0]) and cn_dgrams != self.nsmds:
+        #    self._release_pydgram_list(pydgrams)
+        #    msg = (
+        #        f'TransitionId {TransitionId_xtc1.name(out_service[0])} incomplete '
+        #        f'(ts:{out_timestamp[0]}) expected:{self.nsmds} received:{cn_dgrams}'
+        #    )
+        #    raise RuntimeError(msg)
         return cn_dgrams
 
     cdef tuple _event_to_bytearray(self, list pydgrams):
@@ -395,10 +516,40 @@ cdef class EventBuilder:
                 footer[i] = 0
                 continue
             footer[i] = pydg.size()
+            print(f"Size: {pydg.size()}")
             evt.extend(bytearray(pydg.as_memoryview()))
             self._release_pydgram(pydg)
             pydgrams[i] = 0
         footer[self.nsmds] = self.nsmds
+        evt.extend(footer)
+        return evt, len(evt)
+
+    cdef tuple _event_to_bytearray_xtc1(self, list pydgrams):
+        """Return (bytearray, size) for the provided PyDgram list, releasing them afterward."""
+        cdef bytearray evt = bytearray()
+        cdef array.array footer = self._event_footer
+        cdef Py_ssize_t n = len(pydgrams)
+        cdef Py_ssize_t i
+        cdef object pydg
+
+        if len(footer) < n + 1:
+            footer.extend([0] * (n + 1 - len(footer)))
+        elif len(footer) > n + 1:
+            del footer[n + 1:]
+
+        for i in range(len(pydgrams)):
+            #print(f"i in event_to_bytearray {i}")
+            pydg = pydgrams[i]
+            if pydg == 0:
+                footer[i] = 0
+                continue
+            footer[i] = pydg.size()
+            print(f"Size: {pydg.size()}")
+            evt.extend(bytearray(pydg.as_memoryview()))
+            self._release_pydgram(pydg)
+            pydgrams[i] = 0
+        footer[i + 1] = i + 1
+        #print("footer: ", footer)
         evt.extend(footer)
         return evt, len(evt)
 
@@ -409,6 +560,8 @@ cdef class EventBuilder:
         cdef array.array footer = array.clone(int_array_template, MAX_BATCH_SIZE + 1, zero=True)
         cdef Py_ssize_t evt_idx
         for evt_idx in range(len(evt_sizes)):
+            #print("evt_idx: ", evt_idx)
+            #print("evt sizes: ", evt_sizes)
             footer[evt_idx] = evt_sizes[evt_idx]
         footer[len(evt_sizes)] = len(evt_sizes)
         batch.extend(footer[:len(evt_sizes) + 1])
@@ -426,39 +579,52 @@ cdef class EventBuilder:
         cdef unsigned got = 0
         cdef unsigned got_step = 0
         cdef double t0
-
+        if self.xtc1:
+            target_batch = 1
+        #print("sizes: ", self.sizes)
+        #print("Target batch, has more:", target_batch, self.has_more())
         while got < target_batch and self.has_more():
-            if self._profile_enabled:
+            if self._profile_enabled and not self.xtc1:
                 t0 = perf_counter()
-            matched = self._gather_event(self._scratch_pydgrams, &service, &timestamp)
-            if self._profile_enabled:
-                self._profile_time_gather += perf_counter() - t0
+            # This just for now checks for the first xtc file only
+            if self.xtc1:
+                matched = self._gather_event_xtc1(self._scratch_pydgrams, &service, &timestamp)
+            else:
+                matched = self._gather_event(self._scratch_pydgrams, &service, &timestamp)
+            #print("Matched:/", matched, self._scratch_pydgrams, service, timestamp)
             if matched == 0:
+                #print("Matched = 0!")
                 break
-            if self._profile_enabled:
+            if self._profile_enabled and not self.xtc1:
                 self._profile_proxy_events += 1
                 t0 = perf_counter()
-            evt_bytearray, evt_size = self._event_to_bytearray(self._scratch_pydgrams)
-            if self._profile_enabled:
+            if self.xtc1:
+                evt_bytearray, evt_size = self._event_to_bytearray_xtc1(self._scratch_pydgrams)
+            else:
+                evt_bytearray, evt_size = self._event_to_bytearray(self._scratch_pydgrams)
+            if self._profile_enabled and not self.xtc1:
                 self._profile_time_serialize += perf_counter() - t0
-            if not TransitionId.isEvent(service):
+            if not self._is_event(service):
                 got_step += 1
                 step_batch.extend(evt_bytearray)
                 step_sizes.append(evt_size)
             batch.extend(evt_bytearray)
             evt_sizes.append(evt_size)
             got += 1
-
+        #print("got", got)
         self.nevents = got
         self.nsteps = got_step
 
         cdef double t_footer
-        if self._profile_enabled:
+        if self._profile_enabled and not self.xtc1:
             t_footer = perf_counter()
+
         self._append_packet_footer(batch, evt_sizes)
         self._append_packet_footer(step_batch, step_sizes)
-        if self._profile_enabled:
+
+        if self._profile_enabled and not self.xtc1:
             self._profile_time_gen_batch += perf_counter() - t_footer
+
 
         return {0: (batch, evt_sizes)}, {0: (step_batch, step_sizes)}
 
@@ -539,7 +705,7 @@ cdef class EventBuilder:
                 batch.extend(evt_bytearray)
                 evt_sizes.append(len(evt_bytearray))
             else:
-                if not TransitionId.isEvent(proxy_evt.service):
+                if not self._is_event(proxy_evt.service):
                     for dest, (step_batch, step_sizes) in step_dict.items():
                         step_batch.extend(evt_bytearray)
                         step_sizes.append(len(evt_bytearray))
@@ -609,7 +775,7 @@ cdef class EventBuilder:
         cdef unsigned target_batch = MAX_BATCH_SIZE if self.batch_size <= 0 else self.batch_size
         if intg_stream_id > -1:
             target_batch = MAX_BATCH_SIZE  # integrating mode ignores user batch_size cap
-
+        print("Batch size: ", self.batch_size)
         # Counters
         cdef unsigned got      = 0
         cdef unsigned got_step = 0
@@ -622,7 +788,6 @@ cdef class EventBuilder:
 
         if self._profile_enabled:
             t_total = perf_counter()
-
         if (
             not self._use_proxy_events
             and not as_proxy_events
@@ -632,7 +797,6 @@ cdef class EventBuilder:
             if self._profile_enabled:
                 self._profile_after_build(perf_counter() - t_total, self.nevents == 0 and self.nsteps == 0)
             return batch_dict, step_dict
-
         # Build loop
         while got < target_batch and self.has_more():
             if self._profile_enabled:
@@ -642,7 +806,7 @@ cdef class EventBuilder:
                 self._profile_time_gather += perf_counter() - t0
 
             if proxy_evt is not None:
-                if not TransitionId.isEvent(proxy_evt.service):
+                if not self._is_event(proxy_evt.service):
                     got_step += 1
                     if filter_timestamps.shape[0] > 0:
                         non_L1_indices.append(got)

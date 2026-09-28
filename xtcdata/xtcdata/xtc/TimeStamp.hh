@@ -24,6 +24,7 @@ public:
     bool       isZero() const;
     uint64_t   to_ns() const;
     TimeStamp& from_ns(uint64_t nsec);
+    unsigned   control() const;
 public:
     TimeStamp& operator=(const TimeStamp&);
     bool       operator>(const TimeStamp&) const;
@@ -125,6 +126,17 @@ inline
 bool XtcData::TimeStamp::TimeStamp::operator==(const TimeStamp& t) const
 {
     return (_high == t._high) && (_low == t._low);
+}
+
+inline
+unsigned XtcData::TimeStamp::control() const
+{
+    // This is Xtc1 specific
+    enum {v_ticks =  0, k_ticks = 24};
+    enum {v_cntrl = 24, k_cntrl = 8};
+    enum {m_ticks = ((1 << k_ticks)-1), s_ticks = (m_ticks << v_ticks)};
+    enum {m_cntrl = ((1 << k_cntrl)-1), s_cntrl = (m_cntrl << v_cntrl)};
+    return (_low & s_cntrl) >> v_cntrl;
 }
 }
 #endif

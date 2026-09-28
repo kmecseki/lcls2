@@ -18,6 +18,7 @@ MAXBUFSIZE=64000000
 
 # Need a different name to prevent clashing with cpp class
 from psana.psexp import TransitionId as PyTransitionId
+from psana.psexp import TransitionId_xtc1 as PyTransitionId_xtc1
 
 
 class AlgDef:
@@ -143,6 +144,23 @@ cdef class PyXtc():
         pycap_damage = PyCapsule_New(<void *>&(self.cptr.damage), "damage", NULL)
         return PyDamage(pycap_damage)
 
+cdef class PyXtc1():
+    # Xtc1 version
+    cdef Xtc1* cptr
+    cdef const void* bufEnd
+
+    def __init__(self, pycap_xtc, pycap_bufend):
+        self.cptr = <Xtc1*>PyCapsule_GetPointer(pycap_xtc, "xtc")
+        self.bufEnd = PyCapsule_GetPointer(pycap_bufend, "bufEnd")
+
+    def sizeofPayload(self):
+        return self.cptr.sizeofPayload()
+
+    @property
+    def damage(self):
+        pycap_damage = PyCapsule_New(<void *>&(self.cptr.damage), "damage", NULL)
+        return PyDamage(pycap_damage)
+
 cdef class PyDgram():
 
     def __init__(self, pycap_dgram, bufsize, config_pydgram=None):
@@ -200,6 +218,62 @@ cdef class PyDgram():
             dg = dgram.Dgram(view=view, config=self.config_pydgram.get(), offset=0)
         return dg
 
+cdef class PyDgram_xtc1():
+
+    def __init__(self, pycap_dgram, bufsize, config_pydgram=None):
+        self.cptr = <Dgram_xtc1*>PyCapsule_GetPointer(pycap_dgram, "dgram_xtc1")
+        self.bufSize = bufsize
+        self.bufEnd = <char*>self.cptr + self.bufSize
+        # All dgram types except config will have config_pydgram passed in.
+        # This is done so that when we export PyDgram as dgram.Dgram,
+        # we can use the config from its own class.
+        self.config_pydgram = config_pydgram
+
+    cpdef void reset_from_ptr(self, size_t addr, uint64_t bufsize):
+        self.cptr = <Dgram_xtc1*>addr
+        self.bufSize = bufsize
+        self.bufEnd = <char*>self.cptr + bufsize
+
+    @property
+    def pyxtc(self):
+        # We can't pass c ptr to Python function (takes Python object).
+        # Follow Valerio's work, here we store c ptr in PyCapsule.
+        pycap_xtc = PyCapsule_New(<void *>&(self.cptr.xtc), "xtc", NULL)
+        pycap_bufend = PyCapsule_New(<void *>(self.bufEnd), "bufEnd", NULL)
+        pyxtc = PyXtc1(pycap_xtc, pycap_bufend)
+        return pyxtc
+
+    def dec_extent(self, uint32_t removed_size):
+        self.cptr.xtc.extent -= removed_size
+        # The minimum value of extent is the size of Xtc.
+        err = f"Invalid extent value: {self.cptr.xtc.extent} (must be >= sizeof(Xtc): {sizeof(Xtc1)})"
+        assert self.cptr.xtc.extent >= sizeof(Xtc1), err
+
+    def get_payload_size(self):
+        return self.cptr.xtc.sizeofPayload()
+
+    def size(self):
+        return sizeof(Dgram_xtc1) + self.get_payload_size()
+
+    def service(self):
+        return self.cptr.service()
+
+    def timestamp(self):
+        return self.cptr.time.value()
+
+    def as_memoryview(self):
+        cdef uint64_t dgram_size = self.size()
+        return <char [:dgram_size]><char*>self.cptr
+
+    def get(self, view=None):
+        """Returns dgram.Dgram representation of this dgram"""
+        if self.config_pydgram is None:
+            another_copy = bytearray(self.as_memoryview())
+            dg = dgram.Dgram_xtc1(view=another_copy, offset=0)
+        else:
+            assert view, "Exporting non-configure Dgram needs save() buffer due to remove operation"
+            dg = dgram.Dgram_xtc1(view=view, config=self.config_pydgram.get(), offset=0)
+        return dg
 
 cdef class PyXtcUpdateIter():
     cdef XtcUpdateIter* cptr

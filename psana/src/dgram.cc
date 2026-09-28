@@ -4,13 +4,15 @@
 #include "xtcdata/xtc/TypeId.hh"
 #include "xtcdata/xtc/XtcIterator.hh"
 #include "xtcdata/xtc/NamesIter.hh"
+#include "xtcdata/xtc/Compression.hh"
+#include "xtcdata/xtc/Partition.hh"
 
-#define PY_LIMITED_API 0x03090000
 #include <Python.h>
 #include <stdio.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
+#define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
 #include <numpy/arrayobject.h>
 #include <numpy/ndarrayobject.h>
 #include <structmember.h>
@@ -596,7 +598,7 @@ static void dictAssign(PyDgramObject* pyDgram, DescData& descdata, Xtc* myXtc)
     }
 }
 
-class PyConvertIter : public XtcIterator
+class PyConvertIter : public XtcIterator<Xtc>
 {
 public:
     enum { Stop, Continue };
@@ -719,7 +721,8 @@ ssize_t read_with_retries(int fd, void* buf, ssize_t count, size_t offset, int m
 
     return readSuccess;
 }
-static int dgram_read(PyDgramObject* self, int sequential)
+template <typename PyDgramObjType>
+static int dgram_read(PyDgramObjType* self, int sequential)
 {
     ssize_t readSuccess=0;
     if (sequential) {
@@ -909,7 +912,7 @@ static int dgram_init(PyDgramObject* self, PyObject* args, PyObject* kwds)
           memcpy((void*)self->dgram, (const void*)&dgram_header, sizeof(dgram_header));
         }
 
-        ssize_t readSuccess = dgram_read(self, sequential);
+        ssize_t readSuccess = dgram_read<PyDgramObject>(self, sequential);
         if (readSuccess == 0) {
             char s[TMPSTRINGSIZE];
             printf("dgram.cc: , dgram read error raising StopIteration.\n");
@@ -1075,6 +1078,626 @@ static PyTypeObject dgram_DgramType = {
     (destructor)dgram_dealloc, /* tp_del*/
 };
 
+/* Legacy Xtc1 support */
+
+struct PyDgramXtc1Object {
+    PyObject_HEAD
+    PyObject* dict;
+    PyObject* dgrambytes;
+    Dgram_xtc1* dgram;
+    int file_descriptor;
+    ssize_t offset;
+    Py_buffer buf;
+    ContainerInfo contInfo;
+    ssize_t size;           // size of dgram - for allocating dgram of any size
+    int max_retries;        // set no. of retries when reading data (default=0)
+};
+
+static int AddAsList(PyObject* parent, const char* field, PyObject* item)
+{
+    PyObject* list = NULL;
+
+    if (PyObject_HasAttrString(parent, field)) {
+        list = PyObject_GetAttrString(parent, field); // new ref
+        if (!list) return -1;
+
+        if (!PyList_Check(list)) {
+            Py_DECREF(list);
+            PyErr_Format(PyExc_TypeError,
+                         "Attribute '%s' exists but is not a list", field);
+            return -1;
+        }
+    }
+    else {
+        list = PyList_New(0); // new ref
+        if (!list) return -1;
+
+        if (PyObject_SetAttrString(parent, field, list) < 0) {
+            Py_DECREF(list);
+            return -1;
+        }
+    }
+
+    if (PyList_Append(list, item) < 0) {
+        Py_DECREF(list);
+        return -1;
+    }
+
+    Py_DECREF(item); // transfer ownership to the list
+    Py_DECREF(list); // done with temporary reference
+
+    return 0;
+}
+
+static PyObject* service_xtc1(PyDgramXtc1Object* self) {
+    return PyLong_FromLong(self->dgram->service());
+}
+
+static PyObject* timestamp_xtc1(PyDgramXtc1Object* self) {
+    return PyLong_FromLong(self->dgram->time.value());
+}
+
+static PyObject* getTypeId_xtc1(PyDgramXtc1Object* self) {
+  return PyLong_FromLong(self->dgram->xtc.getTypeId());
+}
+
+static PyObject* getPayloadOffset_xtc1(PyDgramXtc1Object* self)
+{
+    const char* dg_begin = (const char*)self->dgram;
+    const char* payload  = (const char*)(self->dgram->xtc.payload());
+
+    Py_ssize_t offset = payload - dg_begin;
+
+    return PyLong_FromSsize_t(offset);
+}
+
+static PyObject* sizeofPayload_xtc1(PyDgramXtc1Object* self) {
+  return PyLong_FromLong(self->dgram->xtc.sizeofPayload());
+}
+
+//static PyObject* getPayload_xtc1(PyDgramXtc1Object* self) {
+//  return PyLong_FromLong(self->dgram->xtc.payload());
+//}
+
+static PyObject* env_xtc1(PyDgramXtc1Object* self) {
+    return PyLong_FromLong(self->dgram->env);
+}
+
+static PyObject* clock_xtc1(PyDgramXtc1Object* self) {
+    return PyLong_FromLong(self->dgram->clock.value());
+}
+
+static PyMemberDef dgram_xtc1_members[] = {
+    { (char*)"__dict__",
+      T_OBJECT_EX, offsetof(PyDgramXtc1Object, dict),
+      0,
+      (char*)"attribute dictionary" },
+    { (char*)"_file_descriptor",
+      T_INT, offsetof(PyDgramXtc1Object, file_descriptor),
+      0,
+      (char*)"attribute file_descriptor" },
+    { (char*)"_offset",
+      T_INT, offsetof(PyDgramXtc1Object, offset),
+      0,
+      (char*)"attribute offset" },
+    { (char*)"_size",
+      T_INT, offsetof(PyDgramXtc1Object, size),
+      0,
+      (char*)"size (bytes) of the dgram" },
+    { (char*)"_dgrambytes",
+      T_OBJECT_EX, offsetof(PyDgramXtc1Object, dgrambytes),
+      0,
+      (char*)"attribute offset" },
+    { NULL }
+};
+
+static PyMethodDef dgram_xtc1_methods[] = {
+    {"env", (PyCFunction)env_xtc1, METH_NOARGS, "env"},
+    {"clock", (PyCFunction)clock_xtc1, METH_NOARGS, "clock"},
+    {"service", (PyCFunction)service_xtc1, METH_NOARGS, "service"},
+    {"getTypeId", (PyCFunction)getTypeId_xtc1, METH_NOARGS, "getTypeId"},
+    {"sizeofPayload", (PyCFunction)sizeofPayload_xtc1, METH_NOARGS, "sizeofPayload"},
+    {"getPayloadOffset", (PyCFunction)getPayloadOffset_xtc1, METH_NOARGS, "getPayloadOffset"},
+    {"timestamp", (PyCFunction)timestamp_xtc1, METH_NOARGS, "timestamp"},
+    {NULL}  /* Sentinel */
+};
+
+static void dgram_xtc1_dealloc(PyDgramXtc1Object* self)
+{
+    Py_XDECREF(self->dict);
+    if (self->buf.buf == NULL) {
+        Py_CLEAR(self->dgrambytes);
+    } else {
+        PyBuffer_Release(&(self->buf));
+    }
+    // can be NULL if we had a problem early in dgram_init
+    Py_XDECREF(self->contInfo.containermod);
+    Py_XDECREF(self->contInfo.pycontainertype);
+    //Py_XDECREF(self->xtclist);
+
+    Py_TYPE(self)->tp_free((PyObject*)self);
+}
+
+static PyObject* dgram_xtc1_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
+{
+    PyDgramXtc1Object* self;
+    self = (PyDgramXtc1Object*)type->tp_alloc(type, 0);
+    if (self != NULL) self->dict = PyDict_New();
+    return (PyObject*)self;
+}
+
+static int PyDgramXtc1Object_getbuffer(PyObject *obj, Py_buffer *view, int flags)
+{
+    if (view == 0) {
+        PyErr_SetString(PyExc_ValueError, "NULL view in getbuffer");
+        return -1;
+    }
+
+    PyDgramXtc1Object* self = (PyDgramXtc1Object*)obj;
+    view->obj = (PyObject*)self;
+    view->buf = (void*)self->dgram;
+    view->len = self->size;
+    view->readonly = 1;
+    view->itemsize = 1;
+    view->format = (char *)"s";
+    view->ndim = 1;
+    view->shape = &view->len;
+    view->strides = &view->itemsize;
+    view->suboffsets = NULL;
+    view->internal = NULL;
+
+    Py_INCREF(self);
+    return 0;
+}
+
+static PyBufferProcs PyDgramXtc1Object_as_buffer = {
+    (getbufferproc)PyDgramXtc1Object_getbuffer,
+    (releasebufferproc)0, // no special release required
+};
+
+class PyConvertIter_xtc1 : public XtcIterator<Xtc1>
+{
+public:
+    enum { Stop, Continue };
+    PyConvertIter_xtc1(Xtc1* xtc, const void* bufEnd, PyDgramXtc1Object* pyDgram, int fd=-1) :
+        XtcIterator<Xtc1>(xtc, bufEnd), _pyDgram(pyDgram), _fd(fd) {}
+
+    int process(Xtc1* xtc, const void* bufEnd) override;
+    Xtc1* uncompress(const Xtc1& xtc);
+
+private:
+    static void cleanup(PyObject* capsule);
+    PyDgramXtc1Object* _pyDgram;
+    int _fd;
+};
+
+Xtc1* PyConvertIter_xtc1::uncompress(const Xtc1& xtc)
+{
+    static const unsigned align_mask = sizeof(uint32_t)-1;
+    const char* end = reinterpret_cast<const char*>(xtc.next());
+    const char* payload = xtc.payload(); 
+
+    //  Calculate the uncompressed size
+    size_t sz = sizeof(Xtc1);
+    while (payload<end) {
+        const CompressedData& cd = *reinterpret_cast<const CompressedData*>(payload);
+        sz += cd.headerSize() + cd.pd().dsize();
+        payload += (sizeof(cd) + cd.headerSize() + sizeof(cd.pd()) + cd.pd().csize() + align_mask)&~align_mask;
+    }
+
+    char* p = new char[sz];
+    Xtc1* pxtc = new (p) Xtc1( TypeId_xtc1(xtc.contains.id(), xtc.contains.compressed_version()),
+                            xtc.src, xtc.damage );
+    payload = xtc.payload();
+    while (payload < end) {
+        const CompressedData& cd = *reinterpret_cast<const CompressedData*>(payload);
+        memcpy( pxtc->alloc(cd.headerSize()), cd.header(), cd.headerSize());
+        if (!cd.pd().uncompress( pxtc->alloc(cd.pd().dsize()) ) ) {
+        delete[] p;
+        p = 0;
+        break;
+        }
+        payload += (sizeof(cd) + cd.headerSize() + sizeof(cd.pd()) + cd.pd().csize() + align_mask)&~align_mask;
+    }
+
+    return reinterpret_cast<Xtc1*>(p);
+}
+
+int PyConvertIter_xtc1::process(Xtc1* xtc, const void* bufEnd)
+{
+    XtcData::TypeId_xtc1::Type type = xtc->contains.id();
+    switch (type) {
+        case XtcData::TypeId_xtc1::Id_Xtc: {
+            // Iterate within the xtc
+            iterate(xtc, bufEnd);
+            break;
+        }
+        case XtcData::TypeId_xtc1::Id_ControlConfig: {
+            break;
+        }
+        case XtcData::TypeId_xtc1::Id_PartitionConfig: {
+            if (xtc->contains.version() == 1) {
+                //const XtcData::ConfigV1* config = reinterpret_cast<const XtcData::ConfigV1*>(xtc->payload);
+                //auto owner = std::shared_ptr<const XtcData::ConfigV1>(config, [](const XtcData::ConfigV1*) {} );
+                //auto srcs = config->sources(owner);
+            } else if (xtc->contains.version() == 2) {
+                const XtcData::ConfigV2* config = reinterpret_cast<const XtcData::ConfigV2*>(xtc->payload());
+                auto owner = std::shared_ptr<const XtcData::ConfigV2>(config, [](const XtcData::ConfigV2*) {} );
+                auto srcs = config->sources(owner);
+
+                for (const auto& s : srcs) {
+                    const XtcData::Src_xtc1& src = s.src();
+                    if (src.level() == XtcData::Level_xtc1::Source) {
+                        const XtcData::DetInfo& detinfo = reinterpret_cast<const XtcData::DetInfo&>(src);
+                        AddAsList((PyObject*)_pyDgram, "detectors", PyUnicode_FromString(XtcData::DetInfo::name(detinfo)));
+                        //std::cout << "Det name: " << XtcData::DetInfo::name(detinfo) << ", group: " << s.group() << std::endl;
+                    } else if (src.level() == XtcData::Level_xtc1::Reporter) {
+                        const XtcData::BldInfo& bldinfo = reinterpret_cast<const XtcData::BldInfo&>(src);
+                        //std::cout << "Reporter name: " << XtcData::BldInfo::name(bldinfo) << ", group: " << s.group() << std::endl;
+                        AddAsList((PyObject*)_pyDgram, "detectors", PyUnicode_FromString(XtcData::BldInfo::name(bldinfo)));
+                    } else {
+                        std::cout << "Unknown source type\n" << std::endl;
+                        std::cout << "Source: (level): " << XtcData::Level_xtc1::name(src.level()) << " "
+                                << ", group: " << s.group()
+                                << std::endl;
+                    }
+                }
+            } else {
+                printf("Unknown Partition Id version\n");
+            }
+
+            break;
+        }
+        default: 
+        {
+            const XtcData::Src_xtc1& src = xtc->src;
+            if (src.level() == XtcData::Level_xtc1::Source) 
+            {
+                PyObject* pycontainertype = _pyDgram->contInfo.pycontainertype;
+                const XtcData::DetInfo& detinfo = reinterpret_cast<const XtcData::DetInfo&>(src);
+                //const char* detName = XtcData::DetInfo::name(detinfo.device());
+                const char* detName = XtcData::DetInfo::name(detinfo);
+
+                if (xtc->contains.is_configuration()) 
+                {
+                    //std::cout << "IS_CONFIG" << std::endl;
+                    // Setting config
+                    // software (container)
+                    PyObject* software = NULL;
+                    if (!PyObject_HasAttrString((PyObject*)_pyDgram, "software")) {
+                        software = PyObject_CallObject(pycontainertype, NULL);
+                        PyObject_SetAttrString((PyObject*)_pyDgram, "software", software);
+                        Py_DECREF(software);
+                    } else {
+                        software = PyObject_GetAttrString((PyObject*)_pyDgram, "software");
+                    }
+
+                    // detContainer (container)
+                    PyObject* detContainer = PyObject_CallObject(pycontainertype, NULL);
+
+                    PyObject_SetAttrString(detContainer, "dettype", PyUnicode_FromString(XtcData::DetInfo::name(detinfo.device())));
+                    PyObject_SetAttrString(detContainer, "detid", PyLong_FromUnsignedLong(detinfo.detId()));
+
+                    // Tuple with the version number
+                    PyObject* pytuple = PyTuple_New(3);
+                    PyTuple_SET_ITEM(pytuple, 0, PyLong_FromLong(xtc->contains.version()));
+                    PyTuple_SET_ITEM(pytuple, 1, PyLong_FromLong(0));
+                    PyTuple_SET_ITEM(pytuple, 2, PyLong_FromLong(0));
+                    // Raw container object
+                    PyObject* pyRaw = PyObject_CallObject(pycontainertype, NULL);
+                    PyObject_SetAttrString(pyRaw, "version", pytuple);
+                    PyObject_SetAttrString(pyRaw, "software", PyUnicode_FromString("raw"));
+                    PyObject* pyBytes;
+                    pyBytes = PyBytes_FromStringAndSize(xtc->payload(), xtc->sizeofPayload());
+                    PyObject* confDict = PyDict_New();
+                    PyDict_SetItem(confDict, PyUnicode_FromString(XtcData::TypeId_xtc1::name(type)), pyBytes);
+                    PyObject_SetAttrString(pyRaw, "confbytes", confDict);
+                    PyObject_SetAttrString(detContainer, "raw", pyRaw);
+
+                    // detInfo (dictionary)
+                    PyObject* detInfo = NULL;
+
+                    if (!PyObject_HasAttrString(software, detName)) {
+                        detInfo = PyDict_New();
+                        PyDict_SetItem(detInfo, PyLong_FromLong(0), detContainer); // segment 0 is always needed
+                        Py_DECREF(detContainer);
+                        PyObject_SetAttrString(software, detName, detInfo);
+                    } else {
+                        detInfo = PyObject_GetAttrString(software, detName);
+                        if (PyDict_Contains(detInfo, PyLong_FromLong(0))) {
+                            detContainer = PyDict_GetItem(detInfo, PyLong_FromLong(0));
+                            if (PyObject_HasAttrString(detContainer, "raw")) { // Just sanity check
+                                pyRaw = PyObject_GetAttrString(detContainer, "raw");
+                                if (PyObject_HasAttrString(pyRaw, "confbytes")) { // Also just sanity check
+                                    confDict = PyObject_GetAttrString(pyRaw, "confbytes");
+                                    // Adding new config
+                                    PyDict_SetItem(confDict, PyUnicode_FromString(XtcData::TypeId_xtc1::name(type)), pyBytes);
+                                }
+                            }
+                        }
+                    }
+
+                    Py_DECREF(detInfo);
+                    Py_DECREF(pyRaw);
+                    Py_DECREF(pytuple);
+                    Py_DECREF(pyBytes);
+                    Py_DECREF(confDict);
+
+                } else {
+
+                    // If it is not config
+                    //std::cout << "NOT_CONFIG" << std::endl;
+                    PyObject* pyBytes;
+
+                    if (_fd >= 0 && xtc->sizeofPayload() == 16) {
+                        // Assuming we have just offset and size from this payload, extracting them
+                        struct XtcInfo {
+                            uint64_t offset;
+                            uint32_t source_id;
+                            uint32_t size;
+                        } __attribute__((packed));
+                        const XtcInfo* smd_info = reinterpret_cast<const XtcInfo*>(xtc->payload());
+                        char* buff = new char[smd_info->size];
+                        pread(_fd, buff, smd_info->size, smd_info->offset);
+                        xtc = reinterpret_cast<Xtc1*> (buff);
+                        uint64_t offset = smd_info->offset;
+                        uint32_t source_id = smd_info->source_id;
+                        uint32_t size = smd_info->size; 
+                        XtcData::TypeId_xtc1::Type type = xtc->contains.id();
+                        std::cout << "dgram.cc - We have type: " << type << ", size: " << smd_info->size << ", offset: " << smd_info->offset << std::endl;
+                    }
+
+                    bool isCompressed = xtc->contains.compressed();
+                    if (isCompressed) {
+                        Xtc1* uncompressedXtc = uncompress(*xtc);
+                        pyBytes = PyBytes_FromStringAndSize(uncompressedXtc->payload(), uncompressedXtc->sizeofPayload());
+                        delete[] uncompressedXtc;
+                        uncompressedXtc = nullptr;
+                    } else { 
+                        pyBytes = PyBytes_FromStringAndSize(xtc->payload(), xtc->sizeofPayload());
+                    }
+
+                    PyObject* xtcList;
+                    if (!PyObject_HasAttrString((PyObject*)_pyDgram, "_xtclist")) {
+                        xtcList = PyList_New(0);
+                        int fail = PyObject_SetAttrString((PyObject*)_pyDgram, "_xtclist", xtcList);
+                        if (fail) printf("Dgram: failed to set xtc list\n");
+                    } else {
+                        xtcList = PyObject_GetAttrString((PyObject*)_pyDgram, "_xtclist");
+                    }
+
+                    //PyObject* pyOffset = PyLong_FromUnsignedLongLong(offset);
+                    PyObject* pySize = PyLong_FromLong(xtc->sizeofPayload());
+                    PyObject* pyContains = PyLong_FromLong(xtc->contains.value()&0xffff);
+                    //PyObject* pySourceId = PyLong_FromUnsignedLong(source_id);
+                    //    if (!pyOffset || !pySize || !pySourceId) {
+                    //        Py_XDECREF(pyOffset);
+                    //        Py_XDECREF(pySize);
+                    //        Py_XDECREF(pySourceId);
+                    //    }
+                    PyObject* thisXtc1 = PyObject_CallObject(pycontainertype, NULL);
+                    PyObject_SetAttrString(thisXtc1, "payload", pyBytes);
+                    PyObject_SetAttrString(thisXtc1, "contains", pyContains);
+                    //PyObject_SetAttrString(thisXtc1, "offset", pyOffset);
+                    PyObject_SetAttrString(thisXtc1, "size", pySize);
+                    //PyObject_SetAttrString(thisXtc1, "source_id", pySourceId);
+                    PyList_Append(xtcList, thisXtc1);
+                    Py_DECREF(xtcList);
+                    Py_DECREF(thisXtc1);
+
+                    PyObject* dict;
+                    if (!PyObject_HasAttrString((PyObject*)_pyDgram, detName)) {
+                        dict = PyDict_New();
+                        int fail = PyObject_SetAttrString((PyObject*)_pyDgram, detName, dict);
+                        if (fail) printf("Dgram: failed to set detector dict\n");
+                    } else {
+                        dict = PyObject_GetAttrString((PyObject*)_pyDgram, detName);
+                    }
+                    Py_DECREF(dict);
+
+                    PyObject* segment = PyObject_CallObject(pycontainertype, NULL);
+                    PyObject* undersegment = PyObject_CallObject(pycontainertype, NULL);
+
+
+                    int fail2 = PyObject_SetAttrString(undersegment, "bytes", pyBytes);
+                    int fail3 = PyObject_SetAttrString(segment, "raw", undersegment); // Has to exist even if it is empty
+                    if ((fail2) || (fail3)) printf("Dgram: failed to set segment/undersegment in dgram.cc\n");
+
+                    PyDict_SetItem(dict, PyLong_FromLong(0), segment);
+                    Py_DECREF(segment);
+                    Py_DECREF(undersegment);
+                    Py_DECREF(pyBytes);
+                }
+            }
+        }
+    }
+    return 1;
+}
+
+static void assignDict_xtc1(PyDgramXtc1Object* self, int fd=-1) {
+    // clear old list
+    //PyList_SetSlice(self->xtclist, 0, PyList_Size(self->xtclist), NULL);
+    auto size = sizeof(Dgram_xtc1) + self->dgram->xtc.sizeofPayload();
+    const void* bufEnd = (char*)(self->dgram) + size;
+    PyConvertIter_xtc1 iter(&self->dgram->xtc, bufEnd, self, fd);
+    iter.iterate();
+
+}
+
+static int dgram_xtc1_init(PyDgramXtc1Object* self, PyObject* args, PyObject* kwds)
+{
+    static char* kwlist[] = {(char*)"file_descriptor",
+                             (char*)"config",
+                             (char*)"offset",
+                             (char*)"size",
+                             (char*)"view",
+                             (char*)"max_retries",
+                             NULL};
+
+    int fd=-1;
+    PyObject* configDgram=0;
+    self->offset=0;
+    self->size=0;
+    bool isView=0;
+    PyObject* view=0;
+    self->max_retries=0;
+    //self->xtclist = PyList_New(0);
+    if (!PyArg_ParseTupleAndKeywords(args, kwds,
+                                     "|iOllOi", kwlist,
+                                     &fd,
+                                     &configDgram,
+                                     &self->offset,
+                                     &self->size,
+                                     &view,
+                                     &self->max_retries)) {
+        return -1;
+    }
+
+    if (fd > -1) {
+        if (fcntl(fd, F_GETFD) == -1) {
+            PyErr_SetString(PyExc_OSError, "invalid file descriptor");
+            return -1;
+        }
+    }
+
+    isView = (view!=0) ? true : false;
+
+    self->contInfo.containermod = PyImport_ImportModule("psana.container");
+    self->contInfo.pycontainertype = PyObject_GetAttrString(self->contInfo.containermod,"Container");
+
+    // Retrieve size and file_descriptor
+    Dgram_xtc1 dgram_header; // For case (1) and (2) below to store the header for later
+    if (!isView) {
+        // If view is not given, we assume dgram is to be created as one of these:
+        // 1. Dgram(file_descriptor=fd) --> create config dgram by read
+        // 2. Dgram(config=config)          create data dgram by read
+        // 3. Dgram(file_descriptor=fd, config=config, offset=int, size=int)
+        //                                  create data dgram by pread
+        // 4. Dgram(config=config, fake_endrun=1, fake_endrun_sec=0, fake_endrun_usec=0)
+
+        if (fd==-1 && configDgram==0) {
+            PyErr_SetString(PyExc_RuntimeError, "Creating empty dgram is no longer supported.");
+            return -1;
+        } else {
+            if (fd==-1) {
+                // For (2) and (4)
+                self->file_descriptor=((PyDgramXtc1Object*)configDgram)->file_descriptor;
+            } else {
+                // For (1) and (3)
+                self->file_descriptor=fd;
+            }
+
+            // For (1) and (2),
+            if (self->size == 0) {
+                // For (1) and (2), obtain dgram_header from fd then extract size
+                int readSuccess = read_with_retries(self->file_descriptor, &dgram_header, sizeof(Dgram_xtc1), 0, self->max_retries);
+                if (readSuccess <= 0) {
+                    PyErr_SetString(PyExc_StopIteration, "Problem reading dgram header.");
+                    return -1;
+                }
+
+                self->size = sizeof(Dgram_xtc1) + dgram_header.xtc.sizeofPayload();
+            }
+        }
+
+        if (self->size == 0) {
+            PyErr_SetString(PyExc_RuntimeError, "Can't retrieve dgram size. Either size is not given when creating read-by-offset dgram or there's a problem reading dgram header.");
+            return -1;
+        }
+
+        // Use c-level api to create PyByteArray to avoid memset - mona
+        self->dgrambytes = PyByteArray_FromStringAndSize(NULL, self->size);
+        if (self->dgrambytes == NULL) {
+            return -1;
+        }
+        self->dgram = (Dgram_xtc1*)(PyByteArray_AS_STRING(self->dgrambytes));
+
+    } else { // if (!isview) {
+
+        // Creating a dgram from view (any objects with a buffer interface) can be done by:
+        // 5. Dgram(view=view, offset=int) --> create a config dgram from the view
+        // 6. Dgram(view=view, config=config, offset=int) --> create a data dgram using the config and view
+
+        // this next line is needed because arrays will increase the reference count
+        // of the view (actually a PyByteArray) in dictAssign.  This is the mechanism we
+        // use so we don't have to copy the array data.
+        self->dgrambytes = view;
+        if (PyObject_GetBuffer(view, &(self->buf), PyBUF_SIMPLE) == -1) {
+            PyErr_SetString(PyExc_MemoryError, "unable to create dgram with the given view");
+            return -1;
+        }
+        self->dgram = (Dgram_xtc1*)(((char *)self->buf.buf) + self->offset);
+
+        self->size = sizeof(Dgram_xtc1) + self->dgram->xtc.sizeofPayload();
+    } // else if (!isView)
+
+    if (self->dgram == NULL) {
+        PyErr_SetString(PyExc_MemoryError, "insufficient memory to create Dgram object");
+        return -1;
+    }
+
+    // Read the data if this dgram is not a view
+    if (!isView) {
+        bool sequential = (fd==-1) != (configDgram==0);
+        if (sequential) {
+          memcpy((void*)self->dgram, (const void*)&dgram_header, sizeof(dgram_header));
+        }
+
+        ssize_t readSuccess = dgram_read<PyDgramXtc1Object>(self, sequential);
+        if (readSuccess == 0) {
+            char s[TMPSTRINGSIZE];
+            printf("dgram.cc: , dgram read error raising StopIteration.\n");
+            snprintf(s, sizeof(s), "loading dgram was unsuccessful -- %s", strerror(errno));
+            PyErr_SetString(PyExc_StopIteration, s);
+            return -1;
+        }
+    }
+
+    // In case we got a renew config (second or more config dgram), we have to
+    // clear the given config (configDgram) to allow the next routines to use
+    // self as a config and assign dictionary to it.
+    if (self->dgram->service() == TransitionId_xtc1::Configure) {
+        configDgram = 0;
+    }
+
+    if (fd != -1) {
+        assignDict_xtc1(self, fd);
+    } else {
+        assignDict_xtc1(self);
+    }
+
+    return 0;
+}
+
+static PyTypeObject dgram_xtc1_DgramType = {
+    PyVarObject_HEAD_INIT(NULL, 0)
+    "psana.dgram.Dgram_xtc1",          /* tp_name */
+    sizeof(PyDgramXtc1Object),         /* tp_basicsize */
+    0,                                 /* tp_itemsize */
+    (destructor)dgram_xtc1_dealloc,    /* tp_dealloc */
+    0,                                 /* tp_vectorcall_offset / tp_print */
+    0, 0, 0, 0,                        /* getattr, setattr, compare, repr */
+    0, 0, 0, 0, 0, 0, 0, 0,            /* various optional slots */
+    &PyDgramXtc1Object_as_buffer,      /* tp_as_buffer */
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /* tp_flags */
+    0,                                 /* tp_doc */
+    0, 0, 0, 0, 0, 0,                  /* traverse, clear, etc. */
+    dgram_xtc1_methods,                /* tp_methods */
+    dgram_xtc1_members,                /* tp_members */
+    0,//dgram_xtc1_getset,                 /* tp_getset */
+    0,                                 /* tp_base */
+    0,                                 /* tp_dict */
+    0, 0,                              /* descr_get/set */
+    offsetof(PyDgramXtc1Object, dict), /* tp_dictoffset */
+    (initproc)dgram_xtc1_init,         /* tp_init */
+    0,                                 /* tp_alloc */
+    dgram_xtc1_new,                    /* tp_new */
+    0,                                 /* tp_free */
+    0, 0, 0, 0, 0, 0,                  /* tp_is_gc, tp_bases, tp_mro,  ... */
+    (destructor)dgram_xtc1_dealloc,    /* tp_del*/
+};
+
+
 #if PY_MAJOR_VERSION > 2
 static PyModuleDef dgrammodule =
 { PyModuleDef_HEAD_INIT, "dgram", NULL, -1, NULL, NULL, NULL, NULL, NULL };
@@ -1091,7 +1714,7 @@ PyMODINIT_FUNC PyInit_dgram(void)
 
     import_array();
 
-    if (PyType_Ready(&dgram_DgramType) < 0) {
+    if (PyType_Ready(&dgram_DgramType) < 0 || PyType_Ready(&dgram_xtc1_DgramType) < 0 ) {
         return NULL;
     }
 
@@ -1102,6 +1725,10 @@ PyMODINIT_FUNC PyInit_dgram(void)
 
     Py_INCREF(&dgram_DgramType);
     PyModule_AddObject(m, "Dgram", (PyObject*)&dgram_DgramType);
+
+    Py_INCREF(&dgram_xtc1_DgramType);
+    PyModule_AddObject(m, "Dgram_xtc1", (PyObject*)&dgram_xtc1_DgramType);
+
     return m;
 }
 #else
@@ -1122,4 +1749,3 @@ PyMODINIT_FUNC initdgram(void) {
     PyModule_AddObject(m, "Dgram", (PyObject *)&dgram_DgramType);
 }
 #endif
-

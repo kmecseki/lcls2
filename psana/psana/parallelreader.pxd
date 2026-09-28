@@ -48,6 +48,10 @@ cdef class ParallelReader:
     cdef unsigned   L1Accept
     cdef unsigned   L1Accept_EndOfBatch
     cdef unsigned   EndRun
+    cdef unsigned   Configure_xtc1
+    cdef unsigned   BeginRun_xtc1
+    cdef unsigned   L1Accept_xtc1
+    cdef unsigned   EndRun_xtc1
     cdef uint64_t   got                  # summing the size of new reads used by prometheus
     cdef uint64_t   chunk_overflown
     cdef int        num_threads
@@ -59,3 +63,6 @@ cdef class ParallelReader:
     cdef void _init_buffers(self, Buffer* bufs, bint allocate_chunk)
     cdef void _free_buffers(self, Buffer* bufs)
     cdef void force_read(self)
+    cdef void force_read_xtc1(self)
+    #cdef void read_one_dgram(self, int file_number)
+    cdef object read_one_dgram_at(self, int file_number, uint64_t offset)

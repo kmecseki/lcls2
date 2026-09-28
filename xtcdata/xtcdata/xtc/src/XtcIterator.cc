@@ -36,8 +36,8 @@ using namespace XtcData;
  **
  ** --
  */
-
-void XtcIterator::iterate(Xtc* root, const void* bufEnd)
+template <>
+void XtcIterator<Xtc>::iterate(Xtc* root, const void* bufEnd)
 {
     if (root->damage.value() & (1 << Damage::Corrupted)) return;
 
@@ -59,5 +59,28 @@ void XtcIterator::iterate(Xtc* root, const void* bufEnd)
         xtc = xtc->next();
     }
 
+    return;
+}
+
+template <>
+void XtcIterator<Xtc1>::iterate(Xtc1* root, const void* bufEnd)
+{
+    if (root->damage.value() & ( 1 << Damage_xtc1::IncompleteContribution)) {
+        printf("Damaged\n");
+        return;
+    }
+
+    Xtc1* xtc = reinterpret_cast<Xtc1*>(root->payload());
+    int remaining = root->sizeofPayload();
+
+    while(remaining > 0) {
+        if(xtc->extent==0) break; // try to skip corrupt event
+        if(!process(xtc, bufEnd)) {
+            printf("process was broken\n");
+            break;
+        };
+        remaining -= xtc->sizeofPayload() + sizeof(Xtc1);
+        xtc = xtc->next();
+    }
     return;
 }

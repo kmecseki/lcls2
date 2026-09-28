@@ -28,11 +28,11 @@ public:
    }
 } SmdDef;
 
-class CheckNamesIdIter : public XtcIterator
+class CheckNamesIdIter : public XtcIterator<Xtc>
 {
 public:
     enum { Stop, Continue };
-    CheckNamesIdIter(NamesId offset_namesId) : XtcIterator(),
+    CheckNamesIdIter(NamesId offset_namesId) : XtcIterator<Xtc>(),
                                                _offset_namesId(offset_namesId) {}
 
     int process(Xtc* xtc, const void* bufEnd)

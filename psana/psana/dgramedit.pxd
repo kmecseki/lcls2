@@ -8,7 +8,9 @@ cdef extern from 'xtcdata/xtc/TransitionId.hh' namespace "XtcData":
     cdef cppclass TransitionId:
         enum Value: ClearReadout, Reset, Configure, Unconfigure, BeginRun, EndRun, \
             BeginStep, EndStep, Enable, Disable, SlowUpdate, L1Accept_EndOfBatch, L1Accept = 12, NumberOf
-
+    cdef cppclass TransitionId_xtc1:
+        enum Value: Unknown, Reset, Map, Unmap, Configure, Unconfigure, BeginRun, EndRun, BeginCalibCycle, \
+            EndCalibCycle, Enable, Disable, L1Accept, NumberOf
 cdef extern from 'xtcdata/xtc/TimeStamp.hh' namespace "XtcData":
     cdef cppclass TimeStamp:
         TimeStamp() except +
@@ -20,11 +22,24 @@ cdef extern from 'xtcdata/xtc/Dgram.hh' namespace "XtcData":
         Xtc xtc
         TransitionId.Value service()
         TimeStamp time
+    cdef cppclass Dgram_xtc1:
+        Dgram_xtc1() except +
+        Xtc1 xtc
+        TransitionId_xtc1.Value service()
+        TimeStamp time
 
 cdef extern from "xtcdata/xtc/Damage.hh" namespace "XtcData":
     cdef cppclass Damage:
         Damage() except +
         uint16_t value() const
+    cdef cppclass Damage_xtc1:
+        Damage_xtc1() except +
+        uint32_t value() const
+
+cdef extern from "xtcdata/xtc/TypeId.hh" namespace "XtcData":
+    cdef cppclass TypeId_xtc1:
+        TypeId_xtc1() except +
+        uint32_t _value
 
 cdef extern from 'xtcdata/xtc/Xtc.hh' namespace "XtcData":
     cdef cppclass Xtc:
@@ -32,6 +47,13 @@ cdef extern from 'xtcdata/xtc/Xtc.hh' namespace "XtcData":
         int sizeofPayload() const
         uint32_t extent
         Damage damage
+    cdef cppclass Xtc1:
+        Xtc1() except +
+        int sizeofPayload() const
+        uint32_t getTypeId()
+        TypeId_xtc1 contains
+        uint32_t extent
+        Damage_xtc1 damage
 
 cdef extern from "xtcdata/xtc/NamesId.hh" namespace "XtcData":
     cdef cppclass NamesId:
@@ -81,9 +103,6 @@ cdef extern from 'xtcdata/xtc/XtcFileIterator.hh' namespace "XtcData":
         Dgram* next()
         uint64_t size()
 
-
-
-
 cdef extern from 'xtcdata/xtc/XtcUpdateIter.hh' namespace "XtcData":
 
     cdef cppclass XtcUpdateIter:
@@ -130,4 +149,11 @@ cdef class PyDgram:
     cdef const void* bufEnd
     cdef uint64_t bufSize
     cdef PyDgram config_pydgram
+    cpdef void reset_from_ptr(self, size_t addr, uint64_t bufsize)
+
+cdef class PyDgram_xtc1:
+    cdef Dgram_xtc1* cptr
+    cdef const void* bufEnd
+    cdef uint64_t bufSize
+    cdef PyDgram_xtc1 config_pydgram
     cpdef void reset_from_ptr(self, size_t addr, uint64_t bufsize)

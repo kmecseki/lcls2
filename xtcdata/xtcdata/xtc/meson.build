@@ -1,10 +1,12 @@
 xtc_sources = files(
+    'src/Compression.cc',
     'src/ConfigIter.cc',
     'src/DataIter.cc',
     'src/Level.cc',
     'src/NamesIter.cc',
     'src/ShapesData.cc',
     'src/Smd.cc',
+    'src/Src.cc',
     'src/TimeStamp.cc',
     'src/TransitionId.cc',
     'src/TypeId.cc',
@@ -14,6 +16,7 @@ xtc_sources = files(
 )
 
 xtc_headers = files(
+    'Compression.hh',
     'Level.hh',
     'NamesId.hh',
     'NamesLookup.hh',

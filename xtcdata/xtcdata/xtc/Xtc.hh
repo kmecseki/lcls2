@@ -121,6 +121,37 @@ public:
     TypeId   contains;
     uint32_t extent;
 };
+
+class Xtc1
+{
+public:
+    Xtc1() : damage(0), extent(sizeof(Xtc1)) {};
+    Xtc1(const Xtc1& xtc) :
+      damage(xtc.damage), src(xtc.src), contains(xtc.contains), extent(sizeof(Xtc1)) {}
+    Xtc1(const TypeId_xtc1& type) : 
+      damage(0), contains(type), extent(sizeof(Xtc1)) {}
+    Xtc1(const TypeId_xtc1& type, const Src_xtc1& _src) : 
+     damage(0), src(_src), contains(type), extent(sizeof(Xtc1)) {}
+    Xtc1(const TypeId_xtc1& _tag, const Src_xtc1& _src, unsigned _damage) : 
+      damage(_damage), src(_src), contains(_tag), extent(sizeof(Xtc1)) {}
+    Xtc1(const TypeId_xtc1& _tag, const Src_xtc1& _src, const Damage_xtc1& _damage) : damage(_damage), src(_src), contains(_tag), extent(sizeof(Xtc1)) {}
+    void* operator new(size_t size, char* p)     { return (void*)p; }
+    void* operator new(size_t size, Xtc1* p)      { return p->alloc(size); }
+    uint32_t sizeofPayload() const { return extent > sizeof(Xtc1) ? extent - sizeof(Xtc1) : 0; }
+    char* payload() { return (char*)(this + 1); }
+    const char* payload() const { return (const char*)(this + 1); }
+    Xtc1* next() { return (Xtc1*)((char*)this + extent); }
+    const Xtc1* next() const { return (const Xtc1*)((char*)this + extent); }
+    uint32_t getTypeId() const { return contains.value(); }
+    void* alloc(uint32_t size) { void* buffer = next(); extent += size; return buffer; }
+
+    Damage_xtc1 damage;
+    Src_xtc1    src;
+    TypeId_xtc1 contains;
+    uint32_t    extent;
+
+};
+
 }
 
 #pragma pack(pop)

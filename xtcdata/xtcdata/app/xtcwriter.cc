@@ -224,11 +224,11 @@ public:
    }
 } HsdRunDef;
 
-class DebugIter : public XtcIterator
+class DebugIter : public XtcIterator<Xtc>
 {
 public:
     enum { Stop, Continue };
-    DebugIter(Xtc* xtc, const void* bufEnd, NamesLookup& namesLookup) : XtcIterator(xtc, bufEnd), _namesLookup(namesLookup)
+    DebugIter(Xtc* xtc, const void* bufEnd, NamesLookup& namesLookup) : XtcIterator<Xtc>(xtc, bufEnd), _namesLookup(namesLookup)
     {
     }
 

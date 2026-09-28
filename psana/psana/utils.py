@@ -195,7 +195,8 @@ def first_service(dgrams):
         if not d:
             continue
         try:
-            svc = (d.env() >> 24) & 0xF
+            #svc = (d.env() >> 24) & 0xF
+            svc = d.service() # Changed this to be compatible with both xtc1 and xtc2
         except Exception:
             # If this dgram can't provide env(), skip it.
             continue

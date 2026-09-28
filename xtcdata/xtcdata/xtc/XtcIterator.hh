@@ -38,11 +38,13 @@ namespace XtcData
 {
 
 class Xtc;
+class Xtc1;
 
+template <typename XtcType>
 class XtcIterator
 {
 public:
-    XtcIterator(Xtc* root, const void* bufEnd);
+    XtcIterator(XtcType* root, const void* bufEnd);
     XtcIterator()
     {
     }
@@ -51,15 +53,15 @@ public:
     }
 
 public:
-    virtual int process(Xtc* xtc, const void* bufEnd) = 0;
+    virtual int process(XtcType* xtc, const void* bufEnd) = 0;
 
 public:
     void iterate();
-    void iterate(Xtc*, const void* bufEnd);
-    const Xtc* root() const;
+    void iterate(XtcType*, const void* bufEnd);
+    const XtcType* root() const;
 
 private:
-    Xtc* _root; // Collection to process in the absence of an argument...
+    XtcType* _root; // Collection to process in the absence of an argument...
     const void* _bufEnd;
 };
 }
@@ -73,8 +75,8 @@ private:
 **
 ** --
 */
-
-inline XtcData::XtcIterator::XtcIterator(Xtc* root, const void* bufEnd) : _root(root), _bufEnd(bufEnd)
+template <typename XtcType>
+inline XtcData::XtcIterator<XtcType>::XtcIterator(XtcType* root, const void* bufEnd) : _root(root), _bufEnd(bufEnd)
 {
 }
 
@@ -85,8 +87,8 @@ inline XtcData::XtcIterator::XtcIterator(Xtc* root, const void* bufEnd) : _root(
 **
 ** --
 */
-
-inline const XtcData::Xtc* XtcData::XtcIterator::root() const
+template <typename XtcType>
+inline const XtcType* XtcData::XtcIterator<XtcType>::root() const
 {
     return _root;
 }
@@ -99,8 +101,8 @@ inline const XtcData::Xtc* XtcData::XtcIterator::root() const
 **
 ** --
 */
-
-inline void XtcData::XtcIterator::iterate()
+template <typename XtcType>
+inline void XtcData::XtcIterator<XtcType>::iterate()
 {
     iterate(_root, _bufEnd);
 }

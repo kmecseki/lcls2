@@ -26,11 +26,11 @@ using namespace std;
 
 #define BUFSIZE 0x4000000
 
-class DebugIter : public XtcIterator
+class DebugIter : public XtcIterator<Xtc>
 {
 public:
     enum { Stop, Continue };
-    DebugIter() : XtcIterator()
+    DebugIter() : XtcIterator<Xtc>()
     {
     }
 

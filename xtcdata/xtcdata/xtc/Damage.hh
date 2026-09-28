@@ -58,6 +58,25 @@ public:
 private:
     uint16_t _damage;
 };
+
+class Damage_xtc1
+{
+public:
+    Damage_xtc1() {}
+    Damage_xtc1(uint32_t v) : _damage(v) {}
+    enum Value {
+      DroppedContribution    = 1,
+      Uninitialized          = 11,
+      OutOfOrder             = 12,
+      OutOfSynch             = 13,
+      UserDefined            = 14,
+      IncompleteContribution = 15,
+      ContainsIncomplete     = 16
+    };
+    uint32_t value() const { return _damage; }
+private:
+    uint32_t _damage;
+};
 }
 
 #endif

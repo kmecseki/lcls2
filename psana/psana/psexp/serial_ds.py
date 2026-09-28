@@ -4,7 +4,7 @@ import numpy as np
 
 from psana import utils
 from psana.dgrammanager import DgramManager
-from psana.psexp import TransitionId
+from psana.psexp import TransitionId, TransitionId_xtc1
 from psana.psexp.ds_base import DataSourceBase
 from psana.psexp.run import RunSerial
 from psana.psexp.smdreader_manager import SmdReaderManager
@@ -40,6 +40,10 @@ class SerialDataSource(DataSourceBase):
             dtype=np.int32,
         )
         self.logger.debug(f"opened smd_fds: {self.smd_fds}")
+        if self.smd_files[0].endswith("xtc"):
+            # Read xtc1 file
+            print("SerialDataSource _get_configs: This is an xtc1")
+            self.dsparms.xtc1 = True
         self.smdr_man = SmdReaderManager(self.smd_fds, self.dsparms)
         # Reading configs (first dgram of the smd files)
         return self.smdr_man.get_next_dgrams()
@@ -55,6 +59,8 @@ class SerialDataSource(DataSourceBase):
         configs = self._get_configs()
         self.dm = DgramManager(
             self.xtc_files, configs=configs, config_consumers=[self.dsparms]
+        ) if not self.dsparms.xtc1 else DgramManager(
+            self.xtc_files, configs=configs, config_consumers=[self.dsparms], idx_files=self.idx_files
         )
         return True
 
@@ -65,7 +71,8 @@ class SerialDataSource(DataSourceBase):
         """
         dgrams = self.smdr_man.get_next_dgrams()
         while dgrams is not None:
-            if dgrams[0].service() == TransitionId.BeginRun:
+            if dgrams[0].service() == (TransitionId_xtc1.BeginRun \
+                if (self.dsparms.xtc1) else TransitionId.BeginRun):
                 self.beginruns = dgrams
                 return True
             dgrams = self.smdr_man.get_next_dgrams()

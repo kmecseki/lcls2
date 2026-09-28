@@ -1,10 +1,10 @@
 import os
 import time
-
+import struct
 import numpy as np
 
 from psana import dgram, utils
-from psana.psexp import TransitionId
+from psana.psexp import TransitionId, TransitionId_xtc1
 from psana.psexp.packet_footer import PacketFooter
 from psana.psexp.tools import mode
 
@@ -52,6 +52,13 @@ class EventManager(object):
         self.i_evt = 0
         self.exit_id = ExitId.NoError
         self.smd_mode = smd
+        self.xtc1 = False
+        self.TransitionId = TransitionId
+        self.EndOfBatch = TransitionId.L1Accept_EndOfBatch
+        if self.dm.xtc1:
+            self.xtc1 = True
+            self.TransitionId = TransitionId_xtc1
+            self.EndOfBatch = TransitionId_xtc1.EndCalibCycle # Double check
 
         self.logger = utils.get_logger(name=utils.get_class_name(self))
         self._bd_read_bytes = 0
@@ -92,7 +99,7 @@ class EventManager(object):
         - service is 0, which only happens to only L1Accept types when the dgram is
           missing from that stream. The service is marked as 0.
         """
-        if TransitionId.isEvent(service) or service == 0:
+        if self.TransitionId.isEvent(service) or service == 0:
             return True
         else:
             return False
@@ -102,9 +109,13 @@ class EventManager(object):
     ):
         if self.use_smds[i_smd]:
             return
-
-        self.bd_offset_array[i_evt, i_smd] = d.smdinfo[0].offsetAlg.intOffset
-        self.bd_size_array[i_evt, i_smd] = d.smdinfo[0].offsetAlg.intDgramSize
+        if hasattr(d, "smdinfo"):
+            self.bd_offset_array[i_evt, i_smd] = d.smdinfo[0].offsetAlg.intOffset
+            self.bd_size_array[i_evt, i_smd] = d.smdinfo[0].offsetAlg.intDgramSize
+            print("smdinfo:", self.bd_offset_array[i_evt, i_smd], self.bd_size_array[i_evt, i_smd])
+        else:
+            self.bd_offset_array[i_evt, i_smd] = current_bd_offsets[i_smd]
+            self.bd_size_array[i_evt, i_smd] = current_bd_chunk_sizes[i_smd]
 
         # Check continuous chunk
         if (
@@ -186,26 +197,35 @@ class EventManager(object):
             else:
                 d = dgram.Dgram(
                     config=self.smd_configs[i_smd], view=self.smd_view, offset=offset
+                ) if not self.xtc1 else dgram.Dgram_xtc1(
+                    config=self.smd_configs[i_smd], view=self.smd_view, offset=offset
                 )
-
+                #if self.xtc1 and d.getTypeId == 1:
+                #    # We have a nested Xtc, we have to repackage it as 
                 self.smd_offset_array[i_evt, i_smd] = offset
                 self.smd_size_array[i_evt, i_smd] = d._size
                 self.service_array[i_evt, i_smd] = d.service()
-
+                #print(f"Get offset and size: offset: {offset}, size: d.size {d._size}, service: {d.service()}")
+                #if self.xtc1:
+                    #print(f"CONTAINS::::::::::::: {d.getTypeId()}")
                 # For L1 with bigdata files, store offset and size found in smd dgrams.
                 # For Enable, store new chunk id (if found).
                 if self.isEvent(d.service()) and self.dm.n_files > 0:
                     if i_first_L1 == -1:
                         i_first_L1 = i_evt
-                    self._get_bd_offset_and_size(
-                        d,
-                        current_bd_offsets,
-                        current_bd_chunk_sizes,
-                        i_evt,
-                        i_smd,
-                        i_first_L1,
-                    )
-                elif d.service() == TransitionId.Enable and hasattr(d, "chunkinfo"):
+                    if not self.xtc1:
+                        self._get_bd_offset_and_size(
+                            d,
+                            current_bd_offsets,
+                            current_bd_chunk_sizes,
+                            i_evt,
+                            i_smd,
+                            i_first_L1,
+                        )
+                    else:
+                        if d.getTypeId() == 1:
+                            self._extract_dgram(d, i_smd, i_evt)
+                elif d.service() == self.TransitionId.Enable and hasattr(d, "chunkinfo"):
                     # We only support chunking on bigdata
                     if self.dm.n_files > 0:
                         _chunk_ids = [
@@ -244,6 +264,35 @@ class EventManager(object):
             self.cutoff_indices.append(
                 np.where(self.cutoff_flag_array[:, i_smd] == 1)[0]
             )
+
+    def _extract_dgram(self, dgram, i_smd, i_evt, setbd=True):
+        if dgram.service() == 12:
+            filtered = [
+                (getattr(dgram, x)[0]).raw.bytes for x in dir(dgram)
+                if not x.startswith('_') and '|' in x
+            ]
+            bd_bytes = [offset for offset in filtered if len(offset) == 16]
+
+            if len(bd_bytes)>1:
+                offsetlist = []
+                sizelist = []
+                for byteobj in bd_bytes:
+                    offset, src, size = struct.unpack_from("<QII", byteobj, 0)
+                    #bd_list.append([evt, offset, src, size])
+                    offsetlist.append(offset)
+                    sizelist.append(size)
+                    if setbd:
+                        self.bd_offset_array[i_evt, i_smd] = offsetlist
+                        self.bd_size_array[i_evt, i_smd] = sizelist
+                    else:
+                        return offsetlist, sizelist
+            else:
+                offset, src, size = struct.unpack_from("<QII", bd_bytes[0], 0)
+                if setbd:
+                    self.bd_offset_array[i_evt, i_smd] = offset
+                    self.bd_size_array[i_evt, i_smd] = size
+                else:
+                    return [offset], [size]
 
     def _open_new_bd_file(self, i_smd, new_chunk_id):
         os.close(self.dm.fds[i_smd])
@@ -354,6 +403,7 @@ class EventManager(object):
             otherwise create dgram from bd_bufs
         """
         dgrams = [None] * self.n_smd_files
+        #print("EventManager _get_next_dgrams")
         for i_smd in range(self.n_smd_files):
             if (
                 self.dm.n_files == 0
@@ -396,16 +446,36 @@ class EventManager(object):
                 size = self.bd_size_array[self.i_evt, i_smd]
                 view = self.bd_bufs[i_smd]
                 self.bd_buf_offsets[i_smd] += size
+                #print(f"Do these numbers make sense? offset: {offset}, size: {size}")
 
             if size > 0:  # handles missing dgram
-                dgrams[i_smd] = dgram.Dgram(
-                    config=self.dm.configs[i_smd], view=view, offset=offset
-                )
-                if (
-                    self.service_array[self.i_evt, i_smd]
-                    == TransitionId.L1Accept_EndOfBatch
-                ):
-                    setattr(dgrams[i_smd], "_endofbatch", True)
+                if self.xtc1:
 
+                    # This is now smd dgram, need to fill in the right fields with big data 
+                    # Does it make a copy? We should
+                    # Repoint the payload, check exact place, xtcreader is off from the offset in smd.
+                    # Another way to initialize? With smd, but get Xtc from big data using the offset? YES
+                    dgrams[i_smd] = dgram.Dgram_xtc1(view=self.smd_view, file_descriptor=self.dm.fds[i_smd])
+                    #self.dgram_storage[i_smd]
+                    #[offsets], [sizes] = self._extract_dgram(dgrams[i_smd], i_smd, self.i_evt)
+
+
+                    #dgram.Dgram_xtc1(config=self.dm.configs[i_smd], view=view, offset=offset)
+
+                    #print(f"EventManager get next dgrams: offset: {offset}, config: {self.dm.configs[i_smd]}")
+                    #print(f"service array: {self.service_array[self.i_evt, i_smd]}, L1 accept: {TransitionId_xtc1.L1Accept}")
+                    if (self.service_array[self.i_evt, i_smd] == TransitionId_xtc1.L1Accept):
+                        #print("shouldnt get here immediately")
+                        setattr(dgrams[i_smd], "_endofbatch", True)
+                else:
+                    dgrams[i_smd] = dgram.Dgram(
+                        config=self.dm.configs[i_smd], view=view, offset=offset
+                    )
+                    if (
+                        self.service_array[self.i_evt, i_smd]
+                        == TransitionId.L1Accept_EndOfBatch
+                    ):
+                        setattr(dgrams[i_smd], "_endofbatch", True)
+        #print("_get_next_dgrams END")
         self.i_evt += 1
         return dgrams

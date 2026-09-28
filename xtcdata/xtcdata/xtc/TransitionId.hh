@@ -31,6 +31,28 @@ public:
     };
     static const char* name(TransitionId::Value id);
 };
+
+class TransitionId_xtc1
+{
+public:
+    enum Value {
+      Unknown,
+      Reset,
+      Map,
+      Unmap,
+      Configure,
+      Unconfigure,
+      BeginRun,
+      EndRun,
+      BeginCalibCycle,
+      EndCalibCycle,
+      Enable,
+      Disable,
+      L1Accept,
+      NumberOf
+    };
+    static const char* name(TransitionId_xtc1::Value id);
+};
 }
 
 #endif

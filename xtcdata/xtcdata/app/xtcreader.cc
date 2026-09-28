@@ -32,11 +32,11 @@ template<typename T> static void _dump(const char* name,  Array<T> arrT, unsigne
     printf("\n");
 }
 
-class DebugIter : public XtcIterator
+class DebugIter : public XtcIterator<Xtc>
 {
 public:
     enum { Stop, Continue };
-    DebugIter(unsigned numWords) : XtcIterator(), _numWords(numWords)
+    DebugIter(unsigned numWords) : XtcIterator<Xtc>(), _numWords(numWords)
     {
     }
 

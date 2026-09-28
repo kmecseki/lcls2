@@ -13,11 +13,11 @@
 using namespace XtcData;
 using std::string;
 
-class SmdIter : public XtcIterator
+class SmdIter : public XtcIterator<Xtc>
 {
 public:
     enum { Stop, Continue };
-    SmdIter() : XtcIterator()
+    SmdIter() : XtcIterator<Xtc>()
     {
     }
 

@@ -3,13 +3,13 @@
 #include "xtcdata/xtc/NamesLookup.hh"
 
 namespace XtcData{
-class NamesIter : public XtcData::XtcIterator
+class NamesIter : public XtcData::XtcIterator<Xtc>
 {
 public:
     enum { Stop, Continue };
-    NamesIter(XtcData::Xtc* xtc, const void* bufEnd) : XtcData::XtcIterator(xtc, bufEnd) {}
-    NamesIter() : XtcData::XtcIterator() {}
-    virtual int process(XtcData::Xtc* xtc, const void* bufEnd);
+    NamesIter(Xtc* xtc, const void* bufEnd) : XtcIterator<Xtc>(xtc, bufEnd) {}
+    NamesIter() : XtcIterator<Xtc>() {}
+    virtual int process(Xtc* xtc, const void* bufEnd);
     NamesLookup& namesLookup() {return _namesLookup;}
 private:
     NamesLookup _namesLookup;

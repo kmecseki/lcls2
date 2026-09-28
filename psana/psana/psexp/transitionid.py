@@ -78,3 +78,84 @@ class TransitionId:
     def all_ids(cls):
         """Return all known transition IDs as a list of ints."""
         return list(cls._id_to_name.keys())
+
+class TransitionId_xtc1:
+    # Enum-style values
+    Unknown             = 0
+    Reset               = 1
+    Map                 = 2
+    Unmap               = 3
+    Configure           = 4
+    Unconfigure         = 5
+    BeginRun            = 6
+    EndRun              = 7
+    BeginCalibCycle     = 8
+    EndCalibCycle       = 9
+    Enable              = 10
+    Disable             = 11
+    L1Accept            = 12
+    NumberOf            = 13
+
+    # Internal name mapping
+    _id_to_name = {
+        0: "Unknown",
+        1: "Reset",
+        2: "Maps",
+        3: "Unmap",
+        4: "Configure",
+        5: "Unconfigure",
+        6: "BeginRun",
+        7: "EndRun",
+        8: "BeginCalibCycle",
+        9: "EndCalibCycle",
+        10: "Enable",
+        11: "Disable",
+        12: "L1Accept",
+        13: "NumberOf"
+    }
+
+    _name_to_id = {v: k for k, v in _id_to_name.items()}
+
+    @classmethod
+    def name(cls, transition_id):
+        """
+        Get the name string of a transition ID.
+
+        Args:
+            transition_id (int): Numeric transition ID.
+
+        Returns:
+            str: Human-readable transition name.
+        """
+        return cls._id_to_name.get(transition_id, f"Unknown({transition_id})")
+
+    @classmethod
+    def value(cls, name):
+        """
+        Get the transition ID from a name.
+
+        Args:
+            name (str): Transition name (e.g. 'BeginRun').
+
+        Returns:
+            int: Transition ID.
+        """
+        return cls._name_to_id.get(name)
+
+    @classmethod
+    def isEvent(cls, transition_id):
+        """
+        Return True if the ID corresponds to an event transition.
+
+        Args:
+            transition_id (int): Transition ID.
+
+        Returns:
+            bool: True if L1Accept or L1Accept_EndOfBatch.
+        """
+        return transition_id == cls.L1Accept
+
+    @classmethod
+    def all_ids(cls):
+        """Return all known transition IDs as a list of ints."""
+        return list(cls._id_to_name.keys())

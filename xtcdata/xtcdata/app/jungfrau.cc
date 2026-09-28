@@ -14,12 +14,12 @@
 using namespace XtcData;
 using std::string;
 
-class MyXtcIter : public XtcIterator
+class MyXtcIter : public XtcIterator<Xtc>
 {
 public:
     enum { Stop, Continue };
     MyXtcIter(Xtc* xtc, const void* bufEnd) :
-        XtcIterator(xtc, bufEnd)
+        XtcIterator<Xtc>(xtc, bufEnd)
     {
     }
 

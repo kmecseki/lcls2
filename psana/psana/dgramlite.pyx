@@ -1,17 +1,17 @@
-from psana.dgramlite cimport Xtc, Sequence, Dgram
+from psana.dgramlite cimport Xtc, Sequence, Dgram, Xtc1, Dgram_xtc1
 from cpython.buffer cimport PyObject_GetBuffer, PyBuffer_Release, PyBUF_ANY_CONTIGUOUS, PyBUF_SIMPLE
 
 cdef class DgramLite:
     cdef uint64_t payload
     cdef uint64_t timestamp 
     cdef unsigned service
-    
+
     def __init__(self, view):
         """Create Dgram (light-weight version) from a given buffer object."""
         cdef Dgram* d
         cdef char* view_ptr
         cdef Py_buffer buf
-        
+
         PyObject_GetBuffer(view, &buf, PyBUF_SIMPLE | PyBUF_ANY_CONTIGUOUS)
         view_ptr = <char *>buf.buf
         d = <Dgram *>(view_ptr)
@@ -31,7 +31,3 @@ cdef class DgramLite:
     @property
     def service(self):
         return self.service
-
-
-
-

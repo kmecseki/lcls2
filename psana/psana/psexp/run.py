@@ -15,7 +15,7 @@ from psana.pscalib.app.calib_prefetch import calib_utils
 import psana.pscalib.calib.MDBWebUtils as wu
 from psana import utils
 
-from . import TransitionId
+from . import TransitionId, TransitionId_xtc1
 from .envstore_manager import EnvStoreManager
 from .events import Events
 from .smd_events import SmdEvents
@@ -118,10 +118,10 @@ class Run(object):
         self.nfiles = 0
         self.scan = False
         self.smd_fds = None
-
+        self.xtc1 = dm.xtc1
         self.shared_state = SimpleNamespace(
-            terminate_flag=Value('b', False)
-        )
+                terminate_flag=Value('b', False)
+            ) if not self.xtc1 else None
 
         # Calibration constant structures
         self._calib_const = None
@@ -130,7 +130,17 @@ class Run(object):
 
         self.logger = utils.get_logger(name=utils.get_class_name(self))
 
-        self.build_detinfo_dict()
+        if self.xtc1:
+            self.TransitionId = TransitionId_xtc1
+            self.TransitionId.isEvent = TransitionId_xtc1.isEvent
+            self.TransitionId.EndRun = TransitionId_xtc1.EndRun
+            self.TransitionId.BeginStep = TransitionId_xtc1.BeginCalibCycle # Is this correct?
+        else:
+            self.TransitionId = TransitionId
+            self.TransitionId.isEvent = TransitionId.isEvent
+            self.TransitionId.EndRun = TransitionId.EndRun
+            self.TransitionId.BeginStep = TransitionId.BeginStep
+            self.build_detinfo_dict()
 
         RunHelper(self)
 
@@ -143,24 +153,27 @@ class Run(object):
         for dgrams in self._evt_iter:
             if self._handle_transition(dgrams):
                 # EndRun handling here ends the stream
-                if utils.first_service(dgrams) == TransitionId.EndRun:
+                first_serv = utils.first_service(dgrams)
+                if first_serv == self.TransitionId.EndRun:
                     return
                 continue  # swallow non-L1 transitions in events() stream
             # L1Accept: construct Event at the Run level
+            print("yielding Event !")
             yield Event(dgrams=dgrams, run=self._run_ctx)
 
     def steps(self):
         for dgrams in self._evt_iter:
             svc = utils.first_service(dgrams)
-            if TransitionId.isEvent(svc):
+            if self.TransitionId.isEvent(svc):
                 # steps() only yields on BeginStep transitions; ignore L1
                 continue
             # Update envstore for every transition
-            self._update_envstore_from_dgrams(dgrams)
+            if not self.xtc1:
+                self._update_envstore_from_dgrams(dgrams)
 
-            if svc == TransitionId.EndRun:
+            if svc == self.TransitionId.EndRun:
                 return
-            if svc == TransitionId.BeginStep:
+            if svc == self.TransitionId.BeginStep:
                 yield Step(
                     Event(dgrams=dgrams, run=self._run_ctx),
                     self._evt_iter,
@@ -316,7 +329,9 @@ class Run(object):
 
     def Detector(self, name, accept_missing=False, **kwargs):
 
-        mapped_env_var_name = self._get_valid_env_var_name(name)
+        mapped_env_var_name = None
+        if not self.dm.xtc1:
+            mapped_env_var_name = self._get_valid_env_var_name(name)
 
         if name not in self.dsparms.configinfo_dict and mapped_env_var_name is None:
             if not accept_missing:
@@ -344,9 +359,10 @@ class Run(object):
                 # Detectors with cfgscan also owns an EnvStore
                 env_store = None
                 var_name = None
-                if det_name in self.esm.stores:
-                    env_store = self.esm.stores[det_name]
-                    setattr(det, "step", StepEvent(env_store))
+                if not self.xtc1:
+                    if det_name in self.esm.stores:
+                        env_store = self.esm.stores[det_name]
+                        setattr(det, "step", StepEvent(env_store))
 
                 self._check_empty_calibconst(det_name)
 
@@ -432,6 +448,9 @@ class Run(object):
 
     @property
     def detnames(self):
+        if self.xtc1:
+            # KAT: remove this once all other detector .software fields are added
+            return set(self.configs[0].detectors)
         return set([x[0] for x in self.dsparms.det_classes["normal"].keys()])
 
     def get_filtered_detinfo(self):
@@ -530,10 +549,11 @@ class Run(object):
     def _handle_transition(self, dgrams):
         """Common transition handling for non-L1Accept dgrams."""
         svc = utils.first_service(dgrams)
-        if TransitionId.isEvent(svc):
+        if self.TransitionId.isEvent(svc):
             return False  # caller should treat it as an L1 event
         # Update env on every non-L1 transition (BeginRun/EndRun/BeginStep/EndStep/etc.)
-        self._update_envstore_from_dgrams(dgrams)
+        if not self.xtc1:
+            self._update_envstore_from_dgrams(dgrams)
         return True
 
 
@@ -716,14 +736,16 @@ class RunSingleFile(Run):
     def __init__(self, expt, runnum, timestamp, dsparms, dm, smdr_man, configs, begingrun_dgrams):
         super(RunSingleFile, self).__init__(expt, runnum, timestamp, dsparms, dm, smdr_man, begingrun_dgrams)
         self.configs = configs
-        super()._setup_envstore()
+        if not dm.xtc1:
+            super()._setup_envstore()
         self._evt_iter = Events(configs,
-                                dm,
-                                self.dsparms.max_retries,
-                                self.dsparms.use_smds,
-                                self.shared_state,
-                                smdr_man=smdr_man)
-        self._setup_run_calibconst()
+                            dm,
+                            self.dsparms.max_retries,
+                            self.dsparms.use_smds,
+                            self.shared_state,
+                            smdr_man=smdr_man)
+        if not dm.xtc1:
+            self._setup_run_calibconst()
 
 
 class RunSerial(Run):
@@ -741,7 +763,11 @@ class RunSerial(Run):
                                 smdr_man=smdr_man)
         self._smd_iter = None
         self._ts_table = None
-        self._setup_run_calibconst()
+        if self.xtc1:
+            self.TransitionId = TransitionId_xtc1
+        else:
+            self.TransitionId = TransitionId
+            self._setup_run_calibconst()
 
     @contextmanager
     def build_table(self):
@@ -763,10 +789,10 @@ class RunSerial(Run):
         try:
             for dgrams in self._smd_iter:
                 svc = utils.first_service(dgrams)
-                if svc != TransitionId.L1Accept:
+                if svc != self.TransitionId.L1Accept:
                     # Keep EnvStore in sync for transitions observed during the scan
                     self._handle_transition(dgrams)
-                    if svc == TransitionId.EndRun:
+                    if svc == self.TransitionId.EndRun:
                         break
                     continue
 

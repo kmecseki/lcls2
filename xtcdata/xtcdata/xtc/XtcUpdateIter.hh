@@ -81,12 +81,12 @@ private:
 
 }; // end class DataDef
 
-class XtcUpdateIter : public XtcData::XtcIterator
+class XtcUpdateIter : public XtcData::XtcIterator<Xtc>
 {
 public:
     enum {Stop, Continue};
 
-    XtcUpdateIter(unsigned numWords) : XtcData::XtcIterator(), _numWords(numWords) {
+    XtcUpdateIter(unsigned numWords) : XtcData::XtcIterator<Xtc>(), _numWords(numWords) {
         _bufSize = 0;
         _payloadSize = 0;
         _removedSize = 0;              // counting size of removed det/alg in bytes

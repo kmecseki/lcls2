@@ -20,36 +20,51 @@ class BatchIterator(object):
     def __init__(self, views, configs, dsparms, callback_run_state=None):
         self.dsparms = dsparms
 
-        # Requires all views
-        empty_view = True
-        for view in views:
-            if view:
-                empty_view = False
-                break
+        if not dsparms.xtc1:
+            # Requires all views
+            empty_view = True
+            for view in views:
+                if view:
+                    empty_view = False
+                    break
+            if empty_view:
+                self.eb = None
+            else:
+                use_proxy_events = bool(dsparms.smd_callback or getattr(dsparms, "intg_det", ""))
+                self.eb = EventBuilder(views,
+                                    configs,
+                                    filter_timestamps=dsparms.timestamps,
+                                    intg_stream_id=dsparms.intg_stream_id,
+                                    batch_size=dsparms.batch_size,
+                                    use_proxy_events=use_proxy_events,
 
-        if empty_view:
-            self.eb = None
+                                    )
+                self.run_smd = RunSmallData(
+                    self.eb,
+                    configs,
+                    dsparms,
+                    callback_run_state=callback_run_state,
+                )
+                self.callback_batch_builder = CallbackBatchBuilder(
+                    self.eb,
+                    self.run_smd,
+                    dsparms.smd_callback,
+                    batch_size=dsparms.batch_size,
+                    respect_batch_size=True,
+                )
         else:
-            use_proxy_events = bool(dsparms.smd_callback or getattr(dsparms, "intg_det", ""))
+            # We have xtc1 situation
+            smdr = views
+
             self.eb = EventBuilder(views,
-                                   configs,
-                                   filter_timestamps=dsparms.timestamps,
-                                   intg_stream_id=dsparms.intg_stream_id,
-                                   batch_size=dsparms.batch_size,
-                                   use_proxy_events=use_proxy_events)
-            self.run_smd = RunSmallData(
-                self.eb,
-                configs,
-                dsparms,
-                callback_run_state=callback_run_state,
-            )
-            self.callback_batch_builder = CallbackBatchBuilder(
-                self.eb,
-                self.run_smd,
-                dsparms.smd_callback,
-                batch_size=dsparms.batch_size,
-                respect_batch_size=True,
-            )
+                                    configs,
+                                    filter_timestamps=dsparms.timestamps,
+                                    intg_stream_id=dsparms.intg_stream_id,
+                                    batch_size=dsparms.batch_size,
+                                    use_proxy_events=False,
+                                    xtc1=True
+                                    )
+        print("BatchIterator init done")
 
     def __iter__(self):
         return self
@@ -66,25 +81,33 @@ class BatchIterator(object):
         # left in all views used by EventBuilder. From this while/for loops, we
         # either gets transitions from SmdDataSource and/or L1 from the callback.
         if self.dsparms.smd_callback == 0:
+            print("smdreader_manager.py - BatchIterator __next__() calling eb.build()")
             batch_dict, step_dict = self.eb.build()
             if self.eb.nevents == 0:
+                print("Evsmdreader_manager.py - BatchIterator __next__()ents: stopping iteration self.eb.nevents == 0")
                 raise StopIteration
         else:
+            print("smdreader_manager.py - BatchIterator __next__(): in ELSE")
             callback_batch = self.callback_batch_builder.next_batch(run_serial=True)
             if callback_batch is None:
+                print("smdreader_manager.py - BatchIterator __next__(): stopping due callback batch is 0.")
                 raise StopIteration
             batch_dict, step_dict = callback_batch
-
         return batch_dict, step_dict
 
 
 class SmdReaderManager(object):
     def __init__(self, smd_fds, dsparms, configs=None):
         self.n_files = len(smd_fds)
+        self.smd_fds = smd_fds
         self.dsparms = dsparms
         self.configs = configs
         self.callback_run_state = CallbackRunState() if dsparms.smd_callback else None
         self.logger = utils.get_logger(name=utils.get_class_name(self))
+        self.xtc1 = False
+        if hasattr(self.dsparms, "xtc1"):
+            self.xtc1 = self.dsparms.xtc1
+
 
         assert self.n_files > 0
 
@@ -201,6 +224,7 @@ class SmdReaderManager(object):
         Returns:
             list of dgrams or None if not available
         """
+        print("in smdreader_manager.py get_next_dgrams()")
         if (
             self.dsparms.max_events > 0
             and self.processed_events >= self.dsparms.max_events
@@ -225,14 +249,17 @@ class SmdReaderManager(object):
 
                 if self.configs is None:
                     dgrams = [
-                        dgram.Dgram(view=ba_buf, offset=0)
-                        for ba_buf in bytearray_bufs
+                        dgram.Dgram_xtc1(view=ba_buf, offset=0) for ba_buf in bytearray_bufs] \
+                            if self.xtc1 \
+                            else [dgram.Dgram(view=ba_buf, offset=0) for ba_buf in bytearray_bufs
                     ]
                     self.configs = dgrams
                     self.smdr.set_configs(self.configs)
                 else:
                     dgrams = [
-                        dgram.Dgram(view=ba_buf, config=config, offset=0)
+                        dgram.Dgram_xtc1(view=ba_buf, config=config, offset=0) \
+                            if self.xtc1 \
+                            else dgram.Dgram(view=ba_buf, config=config, offset=0)
                         for ba_buf, config in zip(bytearray_bufs, self.configs)
                     ]
 
@@ -382,6 +409,18 @@ class SmdReaderManager(object):
         if not success:
             raise StopIteration
 
+        #if self.xtc1:
+        #    #print("Trying out reading dgram at an offset!!!")
+        #    #print(self.smdr.read_one_dgram_at(self.smd_fds[0], 96064))
+        #    #exit(1)
+        #    batch_iter = BatchIterator(
+        #        self.smdr,
+        #        self.configs,
+        #        self.dsparms,
+        #        callback_run_state=self.callback_run_state,
+        #    )
+
+        #else:
         mmrv_bufs = [
             self.smdr.show(i) for i in range(self.n_files)
         ]

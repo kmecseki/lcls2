@@ -55,6 +55,7 @@ class DsParms:
     smd_callback: int = 0
     smd_files: list[str] = field(default_factory=list)
     use_smds: list[bool] = field(default_factory=list)
+    xtc1: bool = False
 
     def set_det_class_table(
         self, det_classes, xtc_info, det_info_table, det_stream_id_table
@@ -404,7 +405,7 @@ class DataSourceBase(abc.ABC):
         """
         Generate list of smd and xtc files given a run number.
 
-        Allowed extentions include .xtc2 and .xtc2.inprogress.
+        Allowed extentions include .xtc, .xtc,inprogress, .xtc2 and .xtc2.inprogress.
         """
         file_info = self._get_file_info_from_db(runnum)
 
@@ -423,7 +424,7 @@ class DataSourceBase(abc.ABC):
                 os.path.join(
                     self.xtc_path,
                     "smalldata",
-                    os.path.splitext(xtc_file_from_db)[0] + ".smd.xtc2",
+                    xtc_file_from_db.replace('.xtc', '.smd.xtc'),
                 )
                 for xtc_file_from_db in xtc_files_from_db
             ]
@@ -437,16 +438,34 @@ class DataSourceBase(abc.ABC):
 
         else:
             smd_dir = os.path.join(self.xtc_path, "smalldata")
+            runnum_str = str(runnum).zfill(4)
+            xtc_patterns = [
+                f"*r{runnum_str}-s*.smd.xtc",
+                f"*r{runnum_str}-s*.smd.xtc.inprogress"
+                f"*r{runnum_str}-s*.smd.xtc2",
+                f"*r{runnum_str}-s*.smd.xtc2.inprogress",
+            ]
             smd_files = sorted(
-                glob.glob(
-                    os.path.join(smd_dir, "*r%s-s*.smd.xtc2" % (str(runnum).zfill(4)))
-                )
-                + glob.glob(
-                    os.path.join(
-                        smd_dir, "*r%s-s*.smd.xtc2.inprogress" % (str(runnum).zfill(4))
-                    )
+                sum(
+                    [glob.glob(os.path.join(smd_dir, xtc_pattern)) for xtc_pattern in xtc_patterns],
+                    []
                 )
             )
+            idx_dir = os.path.join(self.xtc_path, "index")
+            if os.path.isdir(idx_dir):
+                idx_patterns = [
+                    f"*r{runnum_str}-s*.xtc.idx",
+                ]
+                idx_files = sorted(
+                    sum(
+                        [glob.glob(os.path.join(idx_dir, idx_pattern)) for idx_pattern in idx_patterns],
+                        []
+                    )
+                )
+                assert (
+                    len(smd_files) == len(idx_files)
+                ), f"Smalldata and index files number mismatch: {len(idx_files)} and {len(smd_files)}."
+                self.idx_files = idx_files
 
         self.n_files = len(smd_files)
         assert (
@@ -458,7 +477,8 @@ class DataSourceBase(abc.ABC):
         # If this name is not found, try .xtc2.
         xtc_files = [
             os.path.join(
-                self.xtc_path, os.path.basename(smd_file).split(".smd")[0] + ".xtc2"
+                self.xtc_path,
+                os.path.basename(smd_file).replace(".smd", "")
             )
             for smd_file in smd_files
         ]
