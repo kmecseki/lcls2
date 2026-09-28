@@ -349,7 +349,7 @@ cdef class EventBuilder:
         cdef char* view_ptr
         cdef Dgram* dg
         cdef size_t dgram_size
-        print("called gather event xtc2")
+        print("eventbuilder.pyx - _gather_event")
         array.zero(self.timestamps)
         array.zero(self.dgram_sizes)
         array.zero(self.services)
@@ -370,12 +370,12 @@ cdef class EventBuilder:
                     min_ts = self.timestamps[view_idx]
                     smd_id = view_idx
                 PyBuffer_Release(&buf)
-        print("1 timstamp:",self.timestamps, "services:", self.services)
+        print("eventbuilder.pyx - _gather_event - 1 timstamp:",self.timestamps, "services:", self.services)
 
         if smd_id == -1:
             self._release_pydgram_list(pydgrams)
             return 0
-        print("Pydgrams1:", pydgrams)
+        print("eventbuilder.pyx - _gather_event - Pydgrams1:", pydgrams)
         out_timestamp[0] = self.timestamps[smd_id]
         out_service[0] = self.services[smd_id]
         cn_dgrams = 1
@@ -393,7 +393,7 @@ cdef class EventBuilder:
                 self.offsets[view_idx] -= self.dgram_sizes[view_idx]
                 self._release_pydgram(pydgrams[view_idx])
                 pydgrams[view_idx] = 0
-        print("2 timestamp", self.timestamps)
+        print("eventbuilder.pyx - _gather_event - 2 timestamp", self.timestamps)
         if not TransitionId.isEvent(out_service[0]) and cn_dgrams != self.nsmds:
             self._release_pydgram_list(pydgrams)
             msg = (
@@ -401,7 +401,7 @@ cdef class EventBuilder:
                 f'(ts:{out_timestamp[0]}) expected:{self.nsmds} received:{cn_dgrams}'
             )
             raise RuntimeError(msg)
-        print("Pydgrams2:", pydgrams)
+        print("eventbuilder.pyx - _gather_event - Pydgrams2:", pydgrams)
         return cn_dgrams
 
     cdef int _gather_event_xtc1(self, list pydgrams, short* out_service, uint64_t* out_timestamp):
@@ -416,7 +416,7 @@ cdef class EventBuilder:
         cdef Dgram_xtc1* dg
         cdef size_t dgram_size
         #cdef int offset = 0
-        print("In _gather_event")
+        print("eventbuilder.pyx - _gather_event - In _gather_event")
         array.zero(self.timestamps)
         array.zero(self.dgram_sizes)
         array.zero(self.services)

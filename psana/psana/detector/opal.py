@@ -66,7 +66,7 @@ class opal_ref_2_0_0(opal_base):
         opal_base.__init__(self, *args, **kwa)
         self._add_fields()
 
-class Opal8000_raw_1_0_0(DetectorImpl):
+class xtc1_opal_base(DetectorImpl):
     def __init__(self, *args, **kwa):
         opal_base.__init__(self, *args, **kwa)
         self.configs = {}
@@ -114,6 +114,12 @@ class Opal8000_raw_1_0_0(DetectorImpl):
                     mirroring = (output_options >> 8) & 0xf
                     self.configs["Mirroring"] = Mirroring.get(mirroring, "Unknown")
 
+class Opal8000_raw_1_0_0(xtc1_opal_base):
+    def __init__(self, *args, **kwa):
+        xtc1_opal_base.__init__(self, *args, **kwa)
+
+class Opal1000_raw_1_0_0(xtc1_opal_base):
+    def __init__(self, *args, **kwa):
+        xtc1_opal_base.__init__(self, *args, **kwa)
+
 # EOF
-
-

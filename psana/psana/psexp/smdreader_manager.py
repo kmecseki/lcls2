@@ -54,7 +54,6 @@ class BatchIterator(object):
                 )
         else:
             # We have xtc1 situation
-            smdr = views
 
             self.eb = EventBuilder(views,
                                     configs,
@@ -409,18 +408,6 @@ class SmdReaderManager(object):
         if not success:
             raise StopIteration
 
-        #if self.xtc1:
-        #    #print("Trying out reading dgram at an offset!!!")
-        #    #print(self.smdr.read_one_dgram_at(self.smd_fds[0], 96064))
-        #    #exit(1)
-        #    batch_iter = BatchIterator(
-        #        self.smdr,
-        #        self.configs,
-        #        self.dsparms,
-        #        callback_run_state=self.callback_run_state,
-        #    )
-
-        #else:
         mmrv_bufs = [
             self.smdr.show(i) for i in range(self.n_files)
         ]

@@ -448,9 +448,6 @@ class Run(object):
 
     @property
     def detnames(self):
-        if self.xtc1:
-            # KAT: remove this once all other detector .software fields are added
-            return set(self.configs[0].detectors)
         return set([x[0] for x in self.dsparms.det_classes["normal"].keys()])
 
     def get_filtered_detinfo(self):
